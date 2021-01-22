@@ -340,8 +340,10 @@ init(Args) ->
                 GenDir = proplists:get_value(update_dir, Args, undefined),
                 load_chain(SwarmTID, BaseDir, GenDir)
         end,
+    %% allows the default interface to be to overridden, for example tests work better running with just 127.0.0.1 rather than running on all interfaces
+    ListenInterface = application:get_env(blockchain, listen_interface, "0.0.0.0"),
     true = lists:all(fun(E) -> E == ok end,
-                     [ libp2p_swarm:listen(SwarmTID, "/ip4/0.0.0.0/tcp/" ++ integer_to_list(Port)) || Port <- Ports ]),
+                     [ libp2p_swarm:listen(SwarmTID, "/ip4/" ++ ListenInterface ++ "/tcp/" ++ integer_to_list(Port)) || Port <- Ports ]),
     {Mode, Info} = get_sync_mode(Blockchain),
 
     {ok, #state{swarm = Swarm, swarm_tid = SwarmTID, blockchain = Blockchain,
