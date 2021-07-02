@@ -29,6 +29,7 @@
     seen_votes/1,
     bba_completion/1,
     snapshot_hash/1,
+    poc_keys/1,
     verify_signatures/4, verify_signatures/5,
     is_rescue_block/1,
     is_election_block/1,
@@ -55,7 +56,8 @@
                        rescue_signature => binary(),
                        seen_votes => [{pos_integer(), binary()}],
                        bba_completion => binary(),
-                       snapshot_hash => binary()
+                       snapshot_hash => binary(),
+                       poc_keys => [any()]
                       }.
 
 -export_type([block/0, block_map/0]).
@@ -86,7 +88,8 @@ new(#{prev_hash := PrevHash,
        epoch_start = EpochStart,
        seen_votes = [wrap_vote(V) || V <- lists:sort(Votes)],
        bba_completion = Completion,
-       snapshot_hash = maps:get(snapshot_hash, Map, <<>>)
+       snapshot_hash = maps:get(snapshot_hash, Map, <<>>),
+       poc_keys = maps:get(poc_keys, Map, [])
       }.
 
 -spec rescue(block_map())-> block().
@@ -172,6 +175,9 @@ bba_completion(Block) ->
 snapshot_hash(Block) ->
     Block#blockchain_block_v1_pb.snapshot_hash.
 
+-spec poc_keys(block()) -> [any()].
+poc_keys(Block) ->
+    Block#blockchain_block_v1_pb.poc_keys.
 %%--------------------------------------------------------------------
 %% @doc
 %% @end
