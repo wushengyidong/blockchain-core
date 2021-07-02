@@ -124,7 +124,8 @@ init(Args) ->
     BTxnManagerOpts = #{ets => blockchain_txn_mgr:make_ets_table()},
     BTxnMgrSupOpts = [],
     StateChannelSupOpts = [BaseDir],
-    BPOCMgrOpts = [],
+    {BCPocMgrTab1, BCPocMgrTab2} = blockchain_poc_mgr:make_ets_table(),
+    BPOCMgrOpts = #{tab1 => BCPocMgrTab1, tab2 => BCPocMgrTab2},
     ChildSpecs =
         [
          ?WORKER(blockchain_lock, []),
