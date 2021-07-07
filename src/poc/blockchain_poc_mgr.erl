@@ -26,7 +26,8 @@
     save_poc_keys/2,
     check_target/4,
     witness/3,
-    receipt/4
+    receipt/4,
+    active_pocs/0
 ]).
 %% ------------------------------------------------------------------
 %% gen_server exports
@@ -169,6 +170,8 @@ witness(Peer, OnionKeyHash, Witness) ->
 receipt(Peer, OnionKeyHash, Receipt, PeerAddr) ->
     gen_server:cast({receipt, Peer, OnionKeyHash, Receipt, PeerAddr}, infinity).
 
+active_pocs() ->
+    cached_pocs().
 %% ------------------------------------------------------------------
 %% gen_server functions
 %% ------------------------------------------------------------------
