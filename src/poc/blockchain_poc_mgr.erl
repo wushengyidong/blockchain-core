@@ -157,7 +157,7 @@ make_ets_table() ->
         ?KEYS,
         [
             named_table,
-            private,
+            protected,
             {heir, self(), undefined}
         ]
     ),
