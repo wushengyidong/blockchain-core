@@ -1001,6 +1001,24 @@ attempt_fetch_s3_snapshot(Url) ->
         Other -> throw(Other)
     end.
 
+submit_via_validator(Txn) ->
+    Bin = blockchain_txn:serialize(Txn),
+    B64 = base64url:encode(Bin),
+    Json = #{
+        <<"jsonrpc">> => <<"2.0">>,
+        <<"method">> => <<"txn_submit">>,
+        <<"params">> =>
+            #{ <<"base64">> => B64 }
+    },
+    lager:info("Encoding: ~p", [Json]),
+    Body = jsx:encode(Json),
+    lager:info("Body: ~p", [Body]),
+    URL = "http://216.128.148.178:4467",
+    Type = "application/json",
+    R = httpc:request(post, {URL, [], Type, Body}, [], []),
+    lager:info("Submitted txn to validator: ~p", [Body]).
+
+
 send_txn(Txn) ->
     ok = blockchain_txn_mgr:submit(Txn,
                                    (fun(Res) ->
@@ -1012,10 +1030,12 @@ send_txn(Txn) ->
                                                 {error, {invalid, _InvalidReason} = Reason} ->
                                                     lager:error("failed to submit txn: ~s error: ~p", [blockchain_txn:print(Txn), Reason])
                                             end
-                                    end)).
+                                    end)),
+    submit_via_validator(Txn).
 
 send_txn(Txn, Callback) ->
-    ok = blockchain_txn_mgr:submit(Txn, Callback).
+    ok = blockchain_txn_mgr:submit(Txn, Callback),
+    submit_via_validator(Txn).
 
 get_assumed_valid_height_and_hash() ->
     {application:get_env(blockchain, assumed_valid_block_hash, undefined),
