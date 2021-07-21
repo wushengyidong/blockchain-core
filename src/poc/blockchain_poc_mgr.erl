@@ -118,7 +118,8 @@ save_poc_keys(CurHeight, KeyList) ->
             cache_poc_key(OnionKeyHash, POCKeyRec)
         end
         || Keys <- KeyList
-    ].
+    ],
+    ok.
 
 -spec check_target(
     Challengee :: libp2p_crypto:pubkey_bin(),
@@ -149,7 +150,7 @@ make_ets_table() ->
         ?ACTIVE_POCS,
         [
             named_table,
-            protected,
+            public,
             {heir, self(), undefined}
         ]
     ),
@@ -157,7 +158,7 @@ make_ets_table() ->
         ?KEYS,
         [
             named_table,
-            protected,
+            public,
             {heir, self(), undefined}
         ]
     ),
@@ -394,9 +395,11 @@ handle_receipt(Address, OnionKeyHash, Receipt, PeerAddr, #state{chain = Chain} =
 %% Internal functions
 %% ------------------------------------------------------------------
 initialize_poc(Challenger, BlockHash, POCStartHeight, Keys, Chain, Ledger, Vars) ->
+
     #{public := OnionCompactKey, secret := POCPrivKey} = Keys,
     POCPubKeyBin = libp2p_crypto:pubkey_to_bin(OnionCompactKey),
     OnionKeyHash = crypto:hash(sha256, POCPubKeyBin),
+    lager:info("*** initializing POC for local onion key hash ~p", [OnionKeyHash]),
 
     Entropy = <<BlockHash/binary, POCPubKeyBin/binary>>,
     RandState = blockchain_utils:rand_state(Entropy),
@@ -458,6 +461,7 @@ init_new_pocs(
     %% get the empheral keys from the block
     %% these will be a prop with tuples as {MinerAddr, PocKeyHash}
     BlockPocEphemeralKeys = blockchain_block_v1:poc_keys(Block),
+    lager:info("init new pocs with keys ~p", [BlockPocEphemeralKeys]),
     %% for each empheral key in this block check if any are our own key
     %% if so then we will need to kick of a POC for each
     [
@@ -520,7 +524,7 @@ purge_pocs_keys(
     %% iterate over the cached POCs, end and clean up any which have exceeded their life span
     CachedPOCKeys = cached_poc_keys(),
     lists:foreach(
-        fun({Key, #poc_key_data{receive_height = {POCHeight}}}) ->
+        fun({Key, #poc_key_data{receive_height = POCHeight}}) ->
             case (BlockHeight - POCHeight) > ?POC_TIMEOUT of
                 true ->
                     %% the lifespan of any POC for this key has passed, we can GC

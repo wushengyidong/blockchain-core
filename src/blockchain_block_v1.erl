@@ -76,7 +76,9 @@ new(#{prev_hash := PrevHash,
       election_epoch := ElectionEpoch,
       epoch_start := EpochStart,
       seen_votes := Votes,
-      bba_completion := Completion} = Map) ->
+      bba_completion := Completion,
+      poc_keys := PocKeys } = Map) ->
+    lager:info("*** new block with poc keys ~p",[PocKeys]),
     #blockchain_block_v1_pb{
        prev_hash = PrevHash,
        height = Height,
@@ -89,7 +91,7 @@ new(#{prev_hash := PrevHash,
        seen_votes = [wrap_vote(V) || V <- lists:sort(Votes)],
        bba_completion = Completion,
        snapshot_hash = maps:get(snapshot_hash, Map, <<>>),
-       poc_keys = maps:get(poc_keys, Map, [])
+       poc_keys = [wrap_poc_key(V) || V <- lists:sort(PocKeys)]
       }.
 
 -spec rescue(block_map())-> block().
@@ -177,7 +179,7 @@ snapshot_hash(Block) ->
 
 -spec poc_keys(block()) -> [any()].
 poc_keys(Block) ->
-    Block#blockchain_block_v1_pb.poc_keys.
+    [unwrap_poc_key(V) || V <- Block#blockchain_block_v1_pb.poc_keys].
 %%--------------------------------------------------------------------
 %% @doc
 %% @end
@@ -220,6 +222,7 @@ new_genesis_block(Transactions) ->
                   election_epoch => 1,
                   epoch_start => 0,
                   seen_votes => [],
+                  poc_keys => [],
                   bba_completion => <<>>}).
 
 %%--------------------------------------------------------------------
@@ -415,6 +418,13 @@ wrap_vote({Idx, Vector}) ->
 unwrap_vote(#blockchain_seen_vote_v1_pb{index = Idx, vector = Vector}) ->
     {Idx, Vector}.
 
+-spec wrap_poc_key({binary(), binary()}) -> #blockchain_poc_key_pb{}.
+wrap_poc_key({MinerAddr, Key}) ->
+    #blockchain_poc_key_pb{addr = MinerAddr, key = Key}.
+
+-spec unwrap_poc_key(#blockchain_poc_key_pb{}) -> {binary(), binary()}.
+unwrap_poc_key(#blockchain_poc_key_pb{addr = MinerAddr, key = Key}) ->
+    {MinerAddr, Key}.
 
 %% ------------------------------------------------------------------
 %% EUNIT Tests
