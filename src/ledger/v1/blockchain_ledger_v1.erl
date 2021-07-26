@@ -2837,26 +2837,34 @@ check_dc_or_hnt_balance(Address, Amount, Ledger, IsFeesEnabled) ->
 
 -spec hnt_burned(ledger()) -> {ok, non_neg_integer()} | {error, any()}.
 hnt_burned(Ledger) ->
-    DefaultCF = default_cf(Ledger),
-    case cache_get(Ledger, DefaultCF, ?HNT_BURNED, []) of
-        {ok, <<Burned:64/integer-unsigned-big>>} ->
-            {ok, Burned};
-        not_found ->
-            {ok, 0};
-        Error ->
-            Error
+    case blockchain:config(?net_emissions_enabled, Ledger) of
+        {ok, true} ->
+            DefaultCF = default_cf(Ledger),
+            case cache_get(Ledger, DefaultCF, ?HNT_BURNED, []) of
+                {ok, <<Burned:64/integer-unsigned-big>>} ->
+                    {ok, Burned};
+                not_found ->
+                    {ok, 0};
+                Error ->
+                    Error
+            end;
+        _ -> {ok, 0}
     end.
 
 -spec add_hnt_burned(non_neg_integer(), ledger()) -> ok.
 add_hnt_burned(Burned, Ledger) ->
-    DefaultCF = default_cf(Ledger),
-    Prev =
-        case cache_get(Ledger, DefaultCF, ?HNT_BURNED, []) of
-            {ok, <<P:64/integer-unsigned-big>>} -> P;
-            not_found -> 0
-        end,
-    New = Prev + Burned,
-    cache_put(Ledger, DefaultCF, ?HNT_BURNED, <<New:64/integer-unsigned-big>>).
+    case blockchain:config(?net_emissions_enabled, Ledger) of
+        {ok, true} ->
+            DefaultCF = default_cf(Ledger),
+            Prev =
+                case cache_get(Ledger, DefaultCF, ?HNT_BURNED, []) of
+                    {ok, <<P:64/integer-unsigned-big>>} -> P;
+                    not_found -> 0
+                end,
+            New = Prev + Burned,
+            cache_put(Ledger, DefaultCF, ?HNT_BURNED, <<New:64/integer-unsigned-big>>);
+        _ -> ok
+    end.
 
 -spec clear_hnt_burned(ledger()) -> ok.
 clear_hnt_burned(Ledger) ->
@@ -2865,20 +2873,28 @@ clear_hnt_burned(Ledger) ->
 
 -spec net_overage(ledger()) -> {ok, non_neg_integer()} | {error, any()}.
 net_overage(Ledger) ->
-    DefaultCF = default_cf(Ledger),
-    case cache_get(Ledger, DefaultCF, ?NET_OVERAGE, []) of
-        {ok, <<Overage:64/integer-unsigned-big>>} ->
-            {ok, Overage};
-        not_found ->
-            {ok, 0};
-        Error ->
-            Error
+    case blockchain:config(?net_emissions_enabled, Ledger) of
+        {ok, true} ->
+            DefaultCF = default_cf(Ledger),
+            case cache_get(Ledger, DefaultCF, ?NET_OVERAGE, []) of
+                {ok, <<Overage:64/integer-unsigned-big>>} ->
+                    {ok, Overage};
+                not_found ->
+                    {ok, 0};
+                Error ->
+                    Error
+            end;
+        _ -> {ok, 0}
     end.
 
 -spec net_overage(non_neg_integer(), ledger()) -> ok.
 net_overage(Overage, Ledger) ->
-    DefaultCF = default_cf(Ledger),
-    cache_put(Ledger, DefaultCF, ?NET_OVERAGE, <<Overage:64/integer-unsigned-big>>).
+    case blockchain:config(?net_emissions_enabled, Ledger) of
+        {ok, true} ->
+            DefaultCF = default_cf(Ledger),
+            cache_put(Ledger, DefaultCF, ?NET_OVERAGE, <<Overage:64/integer-unsigned-big>>);
+        _ -> ok
+    end.
 
 -spec token_burn_exchange_rate(ledger()) -> {ok, integer()} | {error, any()}.
 token_burn_exchange_rate(Ledger) ->
