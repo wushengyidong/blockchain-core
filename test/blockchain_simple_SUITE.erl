@@ -1497,13 +1497,10 @@ epoch_reward_test(Config) ->
     meck:unload(blockchain_txn_consensus_group_v1).
 
 net_emissions_reward_test(Config) ->
-    BaseDir = ?config(base_dir, Config),
-
     ConsensusMembers = ?config(consensus_members, Config),
-    BaseDir = ?config(base_dir, Config),
     Chain = ?config(chain, Config),
 
-    [_, {PubKeyBin, {_, _PrivKey, _}}|_] = ConsensusMembers,
+    [_, {PubKeyBin, {_, PrivKey, _}}|_] = ConsensusMembers,
 
     meck:new(blockchain_txn_poc_receipts_v1, [passthrough]),
     meck:expect(blockchain_txn_poc_receipts_v1, is_valid, fun(_Txn, _Chain) -> ok end),
@@ -1604,6 +1601,17 @@ net_emissions_reward_test(Config) ->
     ?assertEqual({ok, 0}, blockchain_ledger_v1:hnt_burned(Ledger)),
     ?assertEqual({ok, 0}, blockchain_ledger_v1:net_overage(Ledger)),
 
+    %% Burn 3000 with token burn and check it appears on the ledger
+    SigFun = libp2p_crypto:mk_sig_fun(PrivKey),
+    TBTxn = blockchain_txn_token_burn_v1:sign(
+              blockchain_txn_token_burn_v1:new(PubKeyBin, 3000, 1),
+              SigFun),
+
+    {ok, B4} = test_utils:create_block(ConsensusMembers, [TBTxn], #{}, false),
+    _ = blockchain_gossip_handler:add_block(B4, Chain, self(), blockchain_swarm:swarm()),
+
+    ?assertEqual({ok, 3000}, blockchain_ledger_v1:hnt_burned(Ledger)),
+    ?assertEqual({ok, 0}, blockchain_ledger_v1:net_overage(Ledger)),
 
     ?assert(meck:validate(blockchain_txn_poc_receipts_v1)),
     meck:unload(blockchain_txn_poc_receipts_v1),
