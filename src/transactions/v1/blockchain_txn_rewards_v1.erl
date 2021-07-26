@@ -137,6 +137,39 @@ is_valid(Txn, Chain) ->
 absorb(Txn, Chain) ->
     Ledger = blockchain:ledger(Chain),
 
+    case blockchain:config(?net_emissions_enabled, Ledger) of
+        {ok, true} ->
+            %% initial proposed max 34.24
+            {ok, Max} = blockchain:config(?net_emissions_max_rate, Ledger),
+            {ok, Burned} = blockchain_ledger_v1:hnt_burned(Ledger),
+            {ok, Overage} = blockchain_ledger_v1:net_overage(Ledger),
+
+            %% clear this since we have it already
+            ok = blockchain_ledger_v1:clear_hnt_burned(Ledger),
+
+            case Burned > Max of
+                %% if burned > max, then add to overage
+                true ->
+                    Overage1 = Overage + (Burned - Max),
+                    ok = blockchain_ledger_v1:net_overage(Overage1, Ledger);
+                %% else we may have pulled from overage to the tune of
+                %% max - burned
+                 _ ->
+                    %% here we pulled from overage up to max
+                    case (Max - Burned) < Overage  of
+                        %% emitted max, pulled from overage
+                        true ->
+                            Overage1 = Overage - (Max - Burned),
+                            ok = blockchain_ledger_v1:net_overage(Overage1, Ledger);
+                        %% not enough overage to emit up to max, 0 overage
+                        _ ->
+                            ok = blockchain_ledger_v1:net_overage(0, Ledger)
+                    end
+            end;
+        _ ->
+            ok
+            end,
+
     case blockchain_ledger_v1:mode(Ledger) == aux of
         false ->
             %% only absorb in the main ledger
@@ -447,7 +480,18 @@ calculate_epoch_reward(Version, Start, End, Ledger) ->
     {ok, ElectionInterval} = blockchain:config(?election_interval, Ledger),
     {ok, BlockTime0} = blockchain:config(?block_time, Ledger),
     {ok, MonthlyReward} = blockchain:config(?monthly_reward, Ledger),
-    calculate_epoch_reward(Version, Start, End, BlockTime0, ElectionInterval, MonthlyReward).
+    Reward = calculate_epoch_reward(Version, Start, End, BlockTime0,
+                                    ElectionInterval, MonthlyReward),
+    case blockchain:config(?net_emissions_enabled, Ledger) of
+        {ok, true} ->
+            %% initial proposed max 34.24
+            {ok, Max} = blockchain:config(?net_emissions_max_rate, Ledger),
+            {ok, Burned} = blockchain_ledger_v1:hnt_burned(Ledger),
+            {ok, Overage} = blockchain_ledger_v1:net_overage(Ledger),
+            Reward + max(Max, Burned + Overage);
+        _ ->
+            Reward
+    end.
 
 -spec calculate_epoch_reward(pos_integer(), pos_integer(), pos_integer(),
                              pos_integer(), pos_integer(), pos_integer()) -> float().
