@@ -2842,7 +2842,7 @@ hnt_burned(Ledger) ->
         {ok, <<Burned:64/integer-unsigned-big>>} ->
             {ok, Burned};
         not_found ->
-            {error, not_found};
+            {ok, 0};
         Error ->
             Error
     end.
