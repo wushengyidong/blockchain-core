@@ -2867,10 +2867,10 @@ clear_hnt_burned(Ledger) ->
 net_overage(Ledger) ->
     DefaultCF = default_cf(Ledger),
     case cache_get(Ledger, DefaultCF, ?NET_OVERAGE, []) of
-        {ok, <<Burned:64/integer-unsigned-big>>} ->
-            {ok, Burned};
+        {ok, <<Overage:64/integer-unsigned-big>>} ->
+            {ok, Overage};
         not_found ->
-            {error, not_found};
+            {ok, 0};
         Error ->
             Error
     end.
