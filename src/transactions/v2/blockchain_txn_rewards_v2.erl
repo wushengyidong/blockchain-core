@@ -159,7 +159,7 @@ absorb(Txn, Chain) ->
             ok = blockchain_ledger_v1:clear_hnt_burned(Ledger),
 
             case Burned > Max of
-                %% if burned > max, then add to overage
+                %% if burned > max, then add (burned - max) to overage
                 true ->
                     Overage1 = Overage + (Burned - Max),
                     ok = blockchain_ledger_v1:net_overage(Overage1, Ledger);
