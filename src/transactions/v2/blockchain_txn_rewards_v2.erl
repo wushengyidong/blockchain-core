@@ -704,7 +704,7 @@ calculate_epoch_reward(Version, Start, End, Ledger) ->
             {ok, Max} = blockchain:config(?net_emissions_max_rate, Ledger),
             {ok, Burned} = blockchain_ledger_v1:hnt_burned(Ledger),
             {ok, Overage} = blockchain_ledger_v1:net_overage(Ledger),
-            Reward + max(Max, Burned + Overage);
+            Reward + min(Max, Burned + Overage);
         _ ->
             Reward
     end.
