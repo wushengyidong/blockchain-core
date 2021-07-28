@@ -10,6 +10,7 @@
 -behaviour(gen_server).
 
 -include_lib("blockchain/include/blockchain_vars.hrl").
+-include_lib("public_key/include/public_key.hrl").
 
 -define(ACTIVE_POCS, active_pocs).
 -define(KEYS, keys).
@@ -104,7 +105,8 @@ start_link(Args) when is_map(Args) ->
 
 -spec cache_poc(OnionKeyHash :: binary(), POCDataRec :: cached_poc_type()) -> ok.
 cache_poc(OnionKeyHash, POCDataRec) ->
-    true = ets:insert(?ACTIVE_POCS, {OnionKeyHash, POCDataRec}).
+    true = ets:insert(?ACTIVE_POCS, {OnionKeyHash, POCDataRec}),
+    ok.
 
 -spec save_poc_keys(CurHeight :: non_neg_integer(), [keys()]) -> ok.
 save_poc_keys(CurHeight, KeyList) ->
@@ -396,50 +398,70 @@ handle_receipt(Address, OnionKeyHash, Receipt, PeerAddr, #state{chain = Chain} =
 %% ------------------------------------------------------------------
 initialize_poc(Challenger, BlockHash, POCStartHeight, Keys, Chain, Ledger, Vars) ->
 
-    #{public := OnionCompactKey, secret := POCPrivKey} = Keys,
+    #{public := OnionCompactKey, secret := {ecc_compact, POCPrivKey}} = Keys,
     POCPubKeyBin = libp2p_crypto:pubkey_to_bin(OnionCompactKey),
+    #'ECPrivateKey'{privateKey = PrivKeyBin} = POCPrivKey,
+    POCPrivKeyHash = crypto:hash(sha256, PrivKeyBin),
     OnionKeyHash = crypto:hash(sha256, POCPubKeyBin),
     lager:info("*** initializing POC for local onion key hash ~p", [OnionKeyHash]),
+    lager:info("*** entropy constructed using blockhash ~p and pocpubkey ~p", [BlockHash, POCPubKeyBin]),
 
-    Entropy = <<BlockHash/binary, POCPubKeyBin/binary>>,
-    RandState = blockchain_utils:rand_state(Entropy),
-    Target = blockchain_poc_target_v4:target(Challenger, POCPrivKey, RandState, Ledger, Vars),
+    Entropy = <<OnionKeyHash/binary, BlockHash/binary>>,
+    ZoneRandState = blockchain_utils:rand_state(Entropy),
+    InitTargetRandState = blockchain_utils:rand_state(POCPrivKeyHash),
+    lager:info("*** ZoneRandState ~p", [ZoneRandState]),
+    lager:info("*** InitTargetRandState ~p", [InitTargetRandState]),
+    case blockchain_poc_target_v4:target(Challenger, InitTargetRandState, ZoneRandState, Ledger, Vars) of
+        {error, Reason}->
+            lager:info("*** failed to find a target, reason ~p", [Reason]),
+            noop;
+        {ok, {TargetPubkeybin, TargetRandState}}->
+            lager:info("*** found target ~p", [TargetPubkeybin]),
+            {ok, LastChallenge} = blockchain_ledger_v1:current_height(Ledger),
+            {ok, B} = blockchain:get_block(LastChallenge, Chain),
+            Time = blockchain_block:time(B),
+            %% TODO - need to handle older paths ?
+            Path = blockchain_poc_path_v4:build(TargetPubkeybin, TargetRandState, Ledger, Time, Vars),
+            lager:info("path created ~p", [Path]),
+            N = erlang:length(Path),
+            [<<IV:16/integer-unsigned-little, _/binary>> | LayerData] = blockchain_txn_poc_receipts_v1:create_secret_hash(
+                Entropy,
+                N + 1
+            ),
+            OnionList = lists:zip([libp2p_crypto:bin_to_pubkey(P) || P <- Path], LayerData),
+            {Onion, Layers} = blockchain_poc_packet:build(Keys, IV, OnionList, BlockHash, Ledger),
+            lager:info("*** Onion: ~p", [Onion]),
+            lager:info("*** Layers: ~p", [Layers]),
+            [_|LayerHashes] = [crypto:hash(sha256, L) || L <- Layers],
+            lager:info("*** LayerHashes: ~p", [LayerHashes]),
+            Challengees = lists:zip(Path, LayerData),
+            lager:info("*** Challengees: ~p", [Challengees]),
+            PacketHashes = lists:zip(Path, LayerHashes),
+            lager:info("*** PacketHashes: ~p", [PacketHashes]),
+            Secret = libp2p_crypto:keys_to_bin(Keys),
+            SecretHash = crypto:hash(sha256, Secret),
+            lager:info("onion of length ~p created ~p", [byte_size(Onion), Onion]),
+            %% save the POC data to our local cache
+            POCData = #poc_data{
+                challenger = Challenger,
+                target = TargetPubkeybin,
+                onion = Onion,
+                secret = Secret, %% TODO: do we still need this ?
+                challengees = Challengees,
+                packet_hashes = PacketHashes,
+                keys = Keys,
+                block_hash = BlockHash,
+                start_height = POCStartHeight
+            },
+            ok = ?MODULE:cache_poc(OnionKeyHash, POCData),
+            lager:info("*** successfully started POC with hash ~p", [OnionKeyHash]),
+            %% save the public POC details to the ledger, needs to be available to validators
+            Ledger1 = blockchain_ledger_v1:new_context(Ledger),
+            ok = blockchain_ledger_v1:request_poc(OnionKeyHash, SecretHash, Challenger, BlockHash, Ledger1),
+            ok = blockchain_ledger_v1:commit_context(Ledger1)
 
-    {ok, LastChallenge} = blockchain_ledger_v1:current_height(Ledger),
-    {ok, B} = blockchain:get_block(LastChallenge, Chain),
-    Time = blockchain_block:time(B),
-    %% TODO - need to handle older paths ?
-    Path = blockchain_poc_path_v4:build(Target, RandState, Ledger, Time, Vars),
-    lager:info("path created ~p", [Path]),
-    N = erlang:length(Path),
-    [<<IV:16/integer-unsigned-little, _/binary>> | LayerData] = blockchain_txn_poc_receipts_v1:create_secret_hash(
-        Entropy,
-        N + 1
-    ),
-    OnionList = lists:zip([libp2p_crypto:bin_to_pubkey(P) || P <- Path], LayerData),
-    {Onion, Layers} = blockchain_poc_packet:build(Keys, IV, OnionList, BlockHash, Ledger),
-    LayerHashes = [crypto:hash(sha256, L) || L <- Layers],
-    Challengees = lists:zip(Path, LayerData),
-    PacketHashes = lists:zip(Path, LayerHashes),
-    Secret = libp2p_crypto:keys_to_bin(Keys),
-    SecretHash = crypto:hash(sha256, Secret),
-    lager:info("onion of length ~p created ~p", [byte_size(Onion), Onion]),
-    %% save the POC data to our local cache
-    POCData = #poc_data{
-        challenger = Challenger,
-        target = Target,
-        onion = Onion,
-        %% TODO: do we still need this ?
-        secret = Secret,
-        challengees = Challengees,
-        packet_hashes = PacketHashes,
-        keys = Keys,
-        block_hash = BlockHash,
-        start_height = POCStartHeight
-    },
-    ok = ?MODULE:cache_poc(OnionKeyHash, POCData),
-    %% save the public POC details to the ledger, needs to be available to validators
-    ok = blockchain_ledger_v1:request_poc(OnionKeyHash, SecretHash, Challenger, BlockHash, Ledger).
+    end.
+
 
 -spec init_new_pocs(
     Block :: blockchain_block:block(),
