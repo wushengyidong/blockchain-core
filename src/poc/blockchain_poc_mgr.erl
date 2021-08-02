@@ -133,13 +133,16 @@ check_target(Challengee, BlockHash, OnionKeyHash, Chain) ->
     %% TODO: as not using the blockhash in the POC key, what purpose does it serve here?
     case blockchain:get_block(BlockHash, Chain) of
         {ok, _Block} ->
+            lager:info("*** check target with key ~p", [OnionKeyHash]),
+            lager:info("*** cached pocs to check ~p", [cached_pocs()]),
+            lager:info("*** check target challengee ~p", [Challengee]),
             case cached_poc(OnionKeyHash) of
                 false ->
-                    {error, invalid_or_expired_poc};
-                {ok, #poc_data{target = Target, onion = Onion}} when Challengee =:= Target ->
+                    {error, <<"invalid_or_expired_poc">>};
+                {ok, {_Key, #poc_data{target = Target, onion = Onion}}} when Challengee =:= Target ->
                     {true, Onion};
                 %%TODO - handle case where supplied blockhash does not match that in cache...do we even need client to provide a blockhash now ???
-                {ok, #poc_data{}} ->
+                {ok, {_Key, #poc_data{}}} ->
                     false
             end;
         {error, not_found} ->
@@ -525,6 +528,7 @@ purge_pocs(
         fun({Key, POCData = #poc_data{start_height = POCStartHeight}}) ->
             case (BlockHeight - POCStartHeight) > ?POC_TIMEOUT of
                 true ->
+                    lager:info("*** purging poc with key ~p", [Key]),
                     %% this POC's time is up, submit receipts we have received and remove from cache
                     ok = submit_receipts(POCData, Chain),
                     ok = delete_cached_poc(Key);
