@@ -171,10 +171,10 @@ make_ets_table() ->
 
 %% a challenger will receive witness reports over P2P
 witness(Peer, OnionKeyHash, Witness) ->
-    gen_server:cast({witness, Peer, OnionKeyHash, Witness}, infinity).
+    gen_server:cast(?MODULE, {witness, Peer, OnionKeyHash, Witness}).
 
 receipt(Peer, OnionKeyHash, Receipt, PeerAddr) ->
-    gen_server:cast({receipt, Peer, OnionKeyHash, Receipt, PeerAddr}, infinity).
+    gen_server:cast(?MODULE, {receipt, Peer, OnionKeyHash, Receipt, PeerAddr}).
 
 active_pocs() ->
     cached_pocs().
@@ -192,12 +192,10 @@ handle_call(_Request, _From, State = #state{}) ->
     {reply, ok, State}.
 
 handle_cast({witness, Peer, OnionKeyHash, Witness}, State) ->
-    ok = handle_witness(Peer, OnionKeyHash, Witness, State),
-    {noreply, State};
+    handle_witness(Peer, OnionKeyHash, Witness, State);
 handle_cast({receipt, Peer, OnionKeyHash, Receipt, PeerAddr}, State) ->
-    ok = handle_receipt(Peer, OnionKeyHash, Receipt, PeerAddr, State),
-    {noreply, State};
-handle_cast(_Request, State = #state{}) ->
+    handle_receipt(Peer, OnionKeyHash, Receipt, PeerAddr, State);
+handle_cast(_Request, State) ->
     {noreply, State}.
 
 handle_info(init, #state{chain = undefined} = State) ->
@@ -327,8 +325,8 @@ handle_receipt(Address, OnionKeyHash, Receipt, PeerAddr, #state{chain = Chain} =
                 false ->
                     {noreply, State};
                 {ok,
-                    {OnionKeyHash,
-                        POCData = #poc_data{challengees = Challengees, responses = Response0}}} ->
+                    {_Key,
+                        #poc_data{challengees = Challengees, responses = Response0} = POCData}} ->
                     %% Also check onion layer secret
                     case lists:keyfind(Gateway, 1, Challengees) of
                         {Gateway, LayerData} ->
@@ -432,7 +430,7 @@ initialize_poc(Challenger, BlockHash, POCStartHeight, Keys, Chain, Ledger, Vars)
                 N + 1
             ),
             OnionList = lists:zip([libp2p_crypto:bin_to_pubkey(P) || P <- Path], LayerData),
-            {Onion, Layers} = blockchain_poc_packet:build(Keys, IV, OnionList, BlockHash, Ledger),
+            {Onion, Layers} = blockchain_poc_packet:build(Keys, Challenger, IV, OnionList, BlockHash, Ledger),
             lager:info("*** Onion: ~p", [Onion]),
             lager:info("*** Layers: ~p", [Layers]),
             [_|LayerHashes] = [crypto:hash(sha256, L) || L <- Layers],
@@ -457,7 +455,7 @@ initialize_poc(Challenger, BlockHash, POCStartHeight, Keys, Chain, Ledger, Vars)
                 start_height = POCStartHeight
             },
             ok = ?MODULE:cache_poc(OnionKeyHash, POCData),
-            lager:info("*** successfully started POC with hash ~p", [OnionKeyHash]),
+            lager:info("starting poc for challengeraddr ~p, onionhash ~p", [Challenger, OnionKeyHash]),
             %% save the public POC details to the ledger, needs to be available to validators
             Ledger1 = blockchain_ledger_v1:new_context(Ledger),
             ok = blockchain_ledger_v1:request_poc(OnionKeyHash, SecretHash, Challenger, BlockHash, Ledger1),
@@ -486,7 +484,7 @@ init_new_pocs(
     %% get the empheral keys from the block
     %% these will be a prop with tuples as {MinerAddr, PocKeyHash}
     BlockPocEphemeralKeys = blockchain_block_v1:poc_keys(Block),
-    lager:info("init new pocs with keys ~p", [BlockPocEphemeralKeys]),
+    lager:info("init new pocs with for block ~p with keys ~p", [BlockHeight, BlockPocEphemeralKeys]),
     %% for each empheral key in this block check if any are our own key
     %% if so then we will need to kick of a POC for each
     [
