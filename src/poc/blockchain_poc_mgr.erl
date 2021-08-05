@@ -24,6 +24,7 @@
     start_link/1,
     make_ets_table/0,
     cache_poc/2,
+    cached_poc_key/1,
     save_poc_keys/2,
     check_target/4,
     witness/3,
@@ -122,6 +123,13 @@ save_poc_keys(CurHeight, KeyList) ->
         || Keys <- KeyList
     ],
     ok.
+
+-spec cached_poc_key(poc_key()) -> {ok, cached_poc_key_type()} | false.
+cached_poc_key(ID) ->
+    case ets:lookup(?KEYS, ID) of
+        [Res] -> {ok, Res};
+        _ -> false
+    end.
 
 -spec check_target(
     Challengee :: libp2p_crypto:pubkey_bin(),
@@ -623,13 +631,6 @@ cached_poc(Key) ->
 -spec cache_poc_key(poc_key(), keys()) -> ok.
 cache_poc_key(ID, Keys) ->
     true = ets:insert(?KEYS, {ID, Keys}).
-
--spec cached_poc_key(poc_key()) -> {ok, cached_poc_key_type()} | false.
-cached_poc_key(ID) ->
-    case ets:lookup(?KEYS, ID) of
-        [Res] -> {ok, Res};
-        _ -> false
-    end.
 
 -spec cached_poc_keys() -> [cached_poc_key_type()].
 cached_poc_keys() ->
