@@ -5,7 +5,7 @@
 %%%-------------------------------------------------------------------
 -module(blockchain_poc_packet).
 
--export([build/6, decrypt/4]).
+-export([build/5, decrypt/4]).
 
 -include("blockchain_vars.hrl").
 
@@ -79,12 +79,11 @@ decrypt(<<IV0:16/integer-unsigned-little, OnionCompactKey:33/binary, Tag:4/binar
 %% All the layer data should be the same size. The general overhead of the packet is 33+2 + (5 * LayerCount) in addition to the size of all the
 %% layer data fields. The IV should be a random 16 bit number. The IV will change for each layer (although this is not strictly necessary).
 -spec build(OnionKey :: libp2p_crypto:key_map(),
-            ChallengerKey :: libp2p_crypto:pubkey(),
             IV :: non_neg_integer(),
             KeysAndData :: [{libp2p_crypto:pubkey(), binary()}, ...],
             BlockHash :: binary(),
             Ledger :: blockchain_ledger_v1:ledger()) -> {OuterLayer :: binary(), Layers :: [binary()]}.
-build(#{secret := OnionPrivKey, public := OnionPubKey}, ChallengerKey, IV, PubKeysAndData, BlockHash, Ledger) ->
+build(#{secret := OnionPrivKey, public := OnionPubKey}, IV, PubKeysAndData, BlockHash, Ledger) ->
     ECDHFun = libp2p_crypto:mk_ecdh_fun(OnionPrivKey),
     OnionCompactKey = libp2p_crypto:pubkey_to_bin(OnionPubKey),
     N = length(PubKeysAndData),
@@ -168,7 +167,7 @@ build(#{secret := OnionPrivKey, public := OnionPubKey}, ChallengerKey, IV, PubKe
                                                           encrypt_row(RowNumber, N, EncryptedMatrix, OnionCompactKey, ECDHKeys, IVs, BlockHash, Ledger)
                                                   end
                                           end, lists:seq(1, N+1)),
-    {<<(hd(IVs)):16/integer-unsigned-little, OnionCompactKey/binary, ChallengerKey/binary, FirstRow/binary>>, PacketRows}.
+    {<<(hd(IVs)):16/integer-unsigned-little, OnionCompactKey/binary, FirstRow/binary>>, PacketRows}.
 
 
 %% ------------------------------------------------------------------
@@ -281,8 +280,6 @@ encrypt_decrypt_test_() ->
       end}].
 
 encrypt_decrypt_single_layer(Ledger) ->
-    #{secret := _ChallengerPrivKey, public := ChallengerPubKey} = libp2p_crypto:generate_keys(ecc_compact),
-    ChallengerPubKeyBin = libp2p_crypto:pubkey_to_bin(ChallengerPubKey),
     #{secret := PrivKey1, public := PubKey1} = libp2p_crypto:generate_keys(ecc_compact),
 
     OnionKey = libp2p_crypto:generate_keys(ecc_compact),
@@ -296,9 +293,9 @@ encrypt_decrypt_single_layer(Ledger) ->
 
     IV = rand:uniform(16384),
     BlockHash = crypto:strong_rand_bytes(32),
-    {OuterPacket, Rows} = build(OnionKey, ChallengerPubKeyBin, IV, KeysAndData, BlockHash, Ledger),
+    {OuterPacket, Rows} = build(OnionKey, IV, KeysAndData, BlockHash, Ledger),
     %% make sure it's deterministic
-    {OuterPacket, Rows} = build(OnionKey, ChallengerPubKeyBin, IV, KeysAndData, BlockHash, Ledger),
+    {OuterPacket, Rows} = build(OnionKey, IV, KeysAndData, BlockHash, Ledger),
 
     #{secret := PrivOnionKey, public := PubOnionKey} = OnionKey,
 
@@ -322,9 +319,6 @@ encrypt_decrypt_single_layer(Ledger) ->
     ok.
 
 encrypt_decrypt_double_layer(Ledger) ->
-    #{secret := _ChallengerPrivKey, public := ChallengerPubKey} = libp2p_crypto:generate_keys(ecc_compact),
-    ChallengerPubKeyBin = libp2p_crypto:pubkey_to_bin(ChallengerPubKey),
-
     #{secret := PrivKey1, public := PubKey1} = libp2p_crypto:generate_keys(ecc_compact),
     #{secret := PrivKey2, public := PubKey2} = libp2p_crypto:generate_keys(ecc_compact),
 
@@ -339,9 +333,9 @@ encrypt_decrypt_double_layer(Ledger) ->
 
     IV = rand:uniform(16384),
     BlockHash = crypto:strong_rand_bytes(32),
-    {OuterPacket, Rows} = build(OnionKey, ChallengerPubKeyBin, IV, KeysAndData, BlockHash, Ledger),
+    {OuterPacket, Rows} = build(OnionKey, IV, KeysAndData, BlockHash, Ledger),
     %% make sure it's deterministic
-    {OuterPacket, Rows} = build(OnionKey, ChallengerPubKeyBin, IV, KeysAndData, BlockHash, Ledger),
+    {OuterPacket, Rows} = build(OnionKey, IV, KeysAndData, BlockHash, Ledger),
 
     #{secret := PrivOnionKey, public := PubOnionKey} = OnionKey,
 
@@ -367,9 +361,6 @@ encrypt_decrypt_double_layer(Ledger) ->
 
 
 encrypt_decrypt(Ledger) ->
-    #{secret := _ChallengerPrivKey, public := ChallengerPubKey} = libp2p_crypto:generate_keys(ecc_compact),
-    ChallengerPubKeyBin = libp2p_crypto:pubkey_to_bin(ChallengerPubKey),
-
     #{secret := PrivKey1, public := PubKey1} = libp2p_crypto:generate_keys(ecc_compact),
     #{secret := PrivKey2, public := PubKey2} = libp2p_crypto:generate_keys(ecc_compact),
     #{secret := PrivKey3, public := PubKey3} = libp2p_crypto:generate_keys(ecc_compact),
@@ -390,9 +381,9 @@ encrypt_decrypt(Ledger) ->
 
     IV = rand:uniform(16384),
     BlockHash = crypto:strong_rand_bytes(32),
-    {OuterPacket, Rows} = build(OnionKey, ChallengerPubKeyBin, IV, KeysAndData, BlockHash, Ledger),
+    {OuterPacket, Rows} = build(OnionKey, IV, KeysAndData, BlockHash, Ledger),
     %% make sure it's deterministic
-    {OuterPacket, Rows} = build(OnionKey, ChallengerPubKeyBin, IV, KeysAndData, BlockHash, Ledger),
+    {OuterPacket, Rows} = build(OnionKey, IV, KeysAndData, BlockHash, Ledger),
 
     #{secret := PrivOnionKey, public := PubOnionKey} = OnionKey,
 

@@ -14,7 +14,7 @@
 
 -define(ACTIVE_POCS, active_pocs).
 -define(KEYS, keys).
--define(POC_TIMEOUT, 20).
+-define(POC_TIMEOUT, 4).
 -define(ADDR_HASH_FP_RATE, 1.0e-9).
 
 %% ------------------------------------------------------------------
@@ -27,8 +27,7 @@
     cached_poc_key/1,
     save_poc_keys/2,
     check_target/4,
-    witness/3,
-    receipt/4,
+    report/4,
     active_pocs/0
 ]).
 %% ------------------------------------------------------------------
@@ -69,7 +68,8 @@
 -record(state, {
     chain :: undefined | blockchain:blockchain(),
     ledger :: undefined | blockchain:ledger(),
-    self_pub_key = undefined :: undefined | libp2p_crypto:pubkey_bin(),
+    sig_fun :: undefined | libp2p_crypto:sig_fun(),
+    pub_key = undefined :: undefined | libp2p_crypto:pubkey_bin(),
     addr_hash_filter :: undefined | #addr_hash_filter{}
 }).
 -type keys() :: #{secret => libp2p_crypto:privkey(), public => libp2p_crypto:pubkey()}.
@@ -177,12 +177,8 @@ make_ets_table() ->
     ),
     {Tab1, Tab2}.
 
-%% a challenger will receive witness reports over P2P
-witness(Peer, OnionKeyHash, Witness) ->
-    gen_server:cast(?MODULE, {witness, Peer, OnionKeyHash, Witness}).
-
-receipt(Peer, OnionKeyHash, Receipt, PeerAddr) ->
-    gen_server:cast(?MODULE, {receipt, Peer, OnionKeyHash, Receipt, PeerAddr}).
+report(Report, OnionKeyHash, Peer, P2PAddr) ->
+    gen_server:cast(?MODULE, {Report, OnionKeyHash, Peer, P2PAddr}).
 
 active_pocs() ->
     cached_pocs().
@@ -192,17 +188,20 @@ active_pocs() ->
 init(_Args) ->
     ok = blockchain_event:add_handler(self()),
     erlang:send_after(500, self(), init),
+    {ok, PubKey, SigFun, _ECDHFun} = blockchain_swarm:keys(),
+    SelfPubKeyBin = libp2p_crypto:pubkey_to_bin(PubKey),
     {ok, #state{
-        self_pub_key = blockchain_swarm:pubkey_bin()
+        sig_fun = SigFun,
+        pub_key = SelfPubKeyBin
     }}.
 
 handle_call(_Request, _From, State = #state{}) ->
     {reply, ok, State}.
 
-handle_cast({witness, Peer, OnionKeyHash, Witness}, State) ->
-    handle_witness(Peer, OnionKeyHash, Witness, State);
-handle_cast({receipt, Peer, OnionKeyHash, Receipt, PeerAddr}, State) ->
-    handle_receipt(Peer, OnionKeyHash, Receipt, PeerAddr, State);
+handle_cast({{witness, Witness}, OnionKeyHash, Peer, _PeerAddr}, State) ->
+    handle_witness(Witness, OnionKeyHash, Peer, State);
+handle_cast({{receipt, Receipt}, OnionKeyHash, Peer, PeerAddr}, State) ->
+    handle_receipt(Receipt, OnionKeyHash, Peer, PeerAddr, State);
 handle_cast(_Request, State) ->
     {noreply, State}.
 
@@ -218,14 +217,14 @@ handle_info(init, #state{chain = undefined} = State) ->
             {noreply, State#state{
                 chain = Chain,
                 ledger = Ledger,
-                self_pub_key = SelfPubKeyBin
+                pub_key = SelfPubKeyBin
             }}
     end;
 handle_info(init, State) ->
     {noreply, State};
 handle_info(
     {blockchain_event, {add_block, BlockHash, Sync, _Ledger} = _Event},
-    #state{chain = Chain, self_pub_key = SelfPubKeyBin} = State
+    #state{chain = Chain, pub_key = SelfPubKeyBin, sig_fun = SigFun} = State
 ) when Sync =:= false ->
     lager:debug("received add block event, sync is ~p", [Sync]),
     State1 = maybe_init_addr_hash(State),
@@ -234,7 +233,7 @@ handle_info(
             %% kick of any new POCs
             ok = init_new_pocs(Block, SelfPubKeyBin, Chain),
             %% GC old poc and assocaited keys
-            ok = purge_pocs(Block, Chain),
+            ok = purge_pocs(Block, SigFun, Chain),
             ok = purge_pocs_keys(Block);
         _ ->
             %% err what?
@@ -251,12 +250,12 @@ terminate(_Reason, _State = #state{}) ->
 %%% breakout functions
 %%%===================================================================
 -spec handle_witness(
-    Address :: libp2p_crypto:pubkey_bin(),
-    OnionKeyHash :: binary(),
     Witness :: binary(),
+    OnionKeyHash :: binary(),
+    Address :: libp2p_crypto:pubkey_bin(),
     State :: #state{}
 ) -> false | {true, binary()} | {error, any()}.
-handle_witness(Address, OnionKeyHash, Witness, #state{chain = Chain} = State) ->
+handle_witness(Witness, OnionKeyHash, Peer, #state{chain = Chain} = State) ->
     lager:info("got witness ~p", [Witness]),
     %% Validate the witness is correct
     Ledger = blockchain:ledger(Chain),
@@ -299,10 +298,10 @@ handle_witness(Address, OnionKeyHash, Witness, #state{chain = Chain} = State) ->
                                                 maps:put(
                                                     PacketHash,
                                                     lists:keystore(
-                                                        Address,
+                                                        Peer,
                                                         1,
                                                         Witnesses,
-                                                        {Address, Witness}
+                                                        {Peer, Witness}
                                                     ),
                                                     Response0
                                                 );
@@ -318,7 +317,7 @@ handle_witness(Address, OnionKeyHash, Witness, #state{chain = Chain} = State) ->
             end
     end.
 
-handle_receipt(Address, OnionKeyHash, Receipt, PeerAddr, #state{chain = Chain} = State) ->
+handle_receipt(Receipt, OnionKeyHash, Peer, PeerAddr, #state{chain = Chain} = State) ->
     lager:info("got receipt ~p", [Receipt]),
     Gateway = blockchain_poc_receipt_v1:gateway(Receipt),
     LayerData = blockchain_poc_receipt_v1:data(Receipt),
@@ -359,7 +358,7 @@ handle_receipt(Address, OnionKeyHash, Receipt, PeerAddr, #state{chain = Chain} =
                                         undefined ->
                                             Responses1 = maps:put(
                                                 Gateway,
-                                                {Address, Receipt},
+                                                {Peer, Receipt},
                                                 Response0
                                             ),
                                             ?MODULE:cache_poc(OnionKeyHash, POCData#poc_data{
@@ -369,7 +368,7 @@ handle_receipt(Address, OnionKeyHash, Receipt, PeerAddr, #state{chain = Chain} =
                                         PeerHash ->
                                             Responses1 = maps:put(
                                                 Gateway,
-                                                {Address,
+                                                {Peer,
                                                     blockchain_poc_receipt_v1:addr_hash(
                                                         Receipt,
                                                         PeerHash
@@ -412,7 +411,7 @@ initialize_poc(Challenger, BlockHash, POCStartHeight, Keys, Chain, Ledger, Vars)
     #'ECPrivateKey'{privateKey = PrivKeyBin} = POCPrivKey,
     POCPrivKeyHash = crypto:hash(sha256, PrivKeyBin),
     OnionKeyHash = crypto:hash(sha256, POCPubKeyBin),
-    lager:info("*** initializing POC for local onion key hash ~p", [OnionKeyHash]),
+    lager:info("*** initializing POC at height ~p for local onion key hash ~p", [POCStartHeight, OnionKeyHash]),
     lager:info("*** entropy constructed using blockhash ~p and pocpubkey ~p", [BlockHash, POCPubKeyBin]),
 
     Entropy = <<OnionKeyHash/binary, BlockHash/binary>>,
@@ -438,7 +437,7 @@ initialize_poc(Challenger, BlockHash, POCStartHeight, Keys, Chain, Ledger, Vars)
                 N + 1
             ),
             OnionList = lists:zip([libp2p_crypto:bin_to_pubkey(P) || P <- Path], LayerData),
-            {Onion, Layers} = blockchain_poc_packet:build(Keys, Challenger, IV, OnionList, BlockHash, Ledger),
+            {Onion, Layers} = blockchain_poc_packet:build(Keys, IV, OnionList, BlockHash, Ledger),
             lager:info("*** Onion: ~p", [Onion]),
             lager:info("*** Layers: ~p", [Layers]),
             [_|LayerHashes] = [crypto:hash(sha256, L) || L <- Layers],
@@ -453,6 +452,7 @@ initialize_poc(Challenger, BlockHash, POCStartHeight, Keys, Chain, Ledger, Vars)
             %% save the POC data to our local cache
             POCData = #poc_data{
                 challenger = Challenger,
+                onion_key_hash = OnionKeyHash,
                 target = TargetPubkeybin,
                 onion = Onion,
                 secret = Secret, %% TODO: do we still need this ?
@@ -521,10 +521,12 @@ init_new_pocs(
 
 -spec purge_pocs(
     Block :: blockchain_block:block(),
+    SigFun :: libp2p_crypto:sig_fun(),
     Chain :: blockchain:blockchain()
 ) -> ok.
 purge_pocs(
     Block,
+    SigFun,
     Chain
 ) ->
     BlockHeight = blockchain_block:height(Block),
@@ -536,9 +538,10 @@ purge_pocs(
                 true ->
                     lager:info("*** purging poc with key ~p", [Key]),
                     %% this POC's time is up, submit receipts we have received and remove from cache
-                    ok = submit_receipts(POCData, Chain),
+                    ok = submit_receipts(POCData, SigFun, Chain),
                     ok = delete_cached_poc(Key);
                 _ ->
+                    lager:info("*** not purging poc with key ~p.  BlockHeight: ~p, POCStartHeight: ~p", [Key, BlockHeight, POCStartHeight]),
                     ok
             end
         end,
@@ -569,7 +572,7 @@ purge_pocs_keys(
     ),
     ok.
 
--spec submit_receipts(cached_poc_type(), blockchain:blockchain()) -> ok.
+-spec submit_receipts(cached_poc_type(), libp2p_crypto:sig_fun(), blockchain:blockchain()) -> ok.
 submit_receipts(
     #poc_data{
         onion_key_hash = OnionKeyHash,
@@ -579,6 +582,7 @@ submit_receipts(
         packet_hashes = LayerHashes,
         block_hash = BlockHash
     } = _Data,
+    SigFun,
     Chain
 ) ->
     Path1 = lists:foldl(
@@ -613,12 +617,11 @@ submit_receipts(
                     lists:reverse(Path1)
                 )
         end,
-    {ok, _, SigFun, _ECDHFun} = blockchain_swarm:keys(),
     Txn1 = blockchain_txn:sign(Txn0, SigFun),
     lager:info("submitting blockchain_txn_poc_receipts_v1 ~p", [Txn0]),
     TxnRef = make_ref(),
     Self = self(),
-    blockchain_worker:submit_txn(Txn1, fun(Result) -> Self ! {TxnRef, Result} end),
+    ok = blockchain_worker:submit_txn(Txn1, fun(Result) -> Self ! {TxnRef, Result} end),
     ok.
 
 -spec cached_poc(poc_key()) -> {ok, cached_poc_type()} | false.
