@@ -146,6 +146,7 @@ init_per_testcase(TestCase, Config) ->
                         #{?net_emissions_enabled => true,
                           ?rewards_txn_version => 2,
                           ?reward_version => 5,
+                          ?monthly_reward => 10000,
                           ?net_emissions_max_rate => 40000};
                     _ ->
                         #{allow_zero_amount => false,
@@ -1516,7 +1517,7 @@ net_emissions_reward_test(Config) ->
 
     % Add few empty blocks to fake epoch
     Start = 1,
-    End = 30,
+    End = 31,
     _Blocks = lists:reverse(lists:foldl(
         fun(X, Acc) ->
             Txns = case X =:= 15 of
@@ -1543,17 +1544,24 @@ net_emissions_reward_test(Config) ->
 
     ?assertEqual({ok, 20000}, blockchain_ledger_v1:hnt_burned(Ledger)),
 
-    {ok, Rewards} = blockchain_txn_rewards_v1:calculate_rewards(Start, End, Chain),
+    {ok, Rewards} = blockchain_txn_rewards_v2:calculate_rewards(Start, End, Chain),
     ct:pal("rewards ~p", [Rewards]),
-    Tx = blockchain_txn_rewards_v1:new(Start, End, Rewards),
+    Tx = blockchain_txn_rewards_v2:new(Start, End, Rewards),
     {ok, B} = test_utils:create_block(ConsensusMembers, [Tx]),
+    ct:pal("circ = ~p", [blockchain_ledger_v1:query_circulating_hnt(Ledger)]),
+
+    ?assertEqual(55000, blockchain_ledger_v1:query_circulating_hnt(Ledger)),
     _ = blockchain_gossip_handler:add_block(B, Chain, self(), blockchain_swarm:swarm()),
 
-    ?assertEqual({ok, 0}, blockchain_ledger_v1:hnt_burned(Ledger)),
+    ct:pal("circ = ~p", [blockchain_ledger_v1:query_circulating_hnt(Ledger)]),
+
+    %% why is this not 75001??
+    ?assertEqual(66999, blockchain_ledger_v1:query_circulating_hnt(Ledger)),
     ?assertEqual({ok, 0}, blockchain_ledger_v1:net_overage(Ledger)),
+    ?assertEqual({ok, 0}, blockchain_ledger_v1:hnt_burned(Ledger)),
 
     Start2 = 33,
-    End2 = 61,
+    End2 = 62,
 
     lists:foldl(
       fun(_, Acc) ->
@@ -1569,17 +1577,18 @@ net_emissions_reward_test(Config) ->
                    ok = blockchain_ledger_v1:add_hnt_burned(80000, L)
            end, Ledger),
 
-    {ok, Rewards2} = blockchain_txn_rewards_v1:calculate_rewards(Start2, End2, Chain),
-    Tx2 = blockchain_txn_rewards_v1:new(Start2, End2, Rewards2),
+    {ok, Rewards2} = blockchain_txn_rewards_v2:calculate_rewards(Start2, End2, Chain),
+    Tx2 = blockchain_txn_rewards_v2:new(Start2, End2, Rewards2),
     {ok, B2} = test_utils:create_block(ConsensusMembers, [Tx2]),
     _ = blockchain_gossip_handler:add_block(B2, Chain, self(), blockchain_swarm:swarm()),
 
 
     ?assertEqual({ok, 0}, blockchain_ledger_v1:hnt_burned(Ledger)),
     ?assertEqual({ok, 40000}, blockchain_ledger_v1:net_overage(Ledger)),
+    ?assertEqual(84999, blockchain_ledger_v1:query_circulating_hnt(Ledger)),
 
     Start3 = 64,
-    End3 = 92,
+    End3 = 93,
     lists:foldl(
       fun(_, Acc) ->
               Txns = [],
@@ -1592,12 +1601,13 @@ net_emissions_reward_test(Config) ->
 
     ?assertEqual({ok, 0}, blockchain_ledger_v1:hnt_burned(Ledger)),
 
-    {ok, Rewards3} = blockchain_txn_rewards_v1:calculate_rewards(Start3, End3, Chain),
-    Tx3 = blockchain_txn_rewards_v1:new(Start3, End3, Rewards3),
+    {ok, Rewards3} = blockchain_txn_rewards_v2:calculate_rewards(Start3, End3, blockchain:ledger(Ledger, Chain)),
+    Tx3 = blockchain_txn_rewards_v2:new(Start3, End3, Rewards3),
     {ok, B3} = test_utils:create_block(ConsensusMembers, [Tx3]),
     _ = blockchain_gossip_handler:add_block(B3, Chain, self(), blockchain_swarm:swarm()),
 
 
+    ?assertEqual(102999, blockchain_ledger_v1:query_circulating_hnt(Ledger)),
     ?assertEqual({ok, 0}, blockchain_ledger_v1:hnt_burned(Ledger)),
     ?assertEqual({ok, 0}, blockchain_ledger_v1:net_overage(Ledger)),
 
