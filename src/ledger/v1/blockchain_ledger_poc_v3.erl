@@ -136,25 +136,25 @@ new_test() ->
         block_hash = <<"block_hash">>,
         start_height = 120000
     },
-    ?assertEqual(PoC, new(<<"some sha256">>, <<"some key bin">>, <<"address">>, <<"block_hash">>, 120000)).
+    ?assertEqual(PoC, new(<<"some key bin">>, <<"address">>, <<"block_hash">>, 120000)).
 
 onion_key_hash_test() ->
-    PoC = new(<<"some sha256">>, <<"some key bin">>, <<"address">>, <<"block_hash">>),
+    PoC = new(<<"some key bin">>, <<"address">>, <<"block_hash">>),
     ?assertEqual(<<"some key bin">>, onion_key_hash(PoC)),
     ?assertEqual(<<"some key bin 2">>, onion_key_hash(onion_key_hash(<<"some key bin 2">>, PoC))).
 
 challenger_test() ->
-    PoC = new(<<"some sha256">>, <<"some key bin">>, <<"address">>, <<"block_hash">>),
+    PoC = new(<<"some key bin">>, <<"address">>, <<"block_hash">>),
     ?assertEqual(<<"address">>, challenger(PoC)),
     ?assertEqual(<<"address 2">>, challenger(challenger(<<"address 2">>, PoC))).
 
 block_hash_test() ->
-    PoC = new(<<"some sha256">>, <<"some key bin">>, <<"address">>, <<"block_hash">>),
+    PoC = new(<<"some key bin">>, <<"address">>, <<"block_hash">>),
     ?assertEqual(<<"block_hash">>, block_hash(PoC)),
     ?assertEqual(<<"block_hash 2">>, block_hash(block_hash(<<"block_hash 2">>, PoC))).
 
 start_height_test() ->
-    PoC = new(<<"some sha256">>, <<"some key bin">>, <<"address">>, <<"block_hash">>, 120000),
+    PoC = new(<<"some key bin">>, <<"address">>, <<"block_hash">>, 120000),
     ?assertEqual(<<"start_height">>, start_height(PoC)),
     ?assertEqual(<<"start_height 2">>, block_hash(block_hash(<<"start_height 2">>, PoC))).
 
