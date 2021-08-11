@@ -2842,7 +2842,7 @@ hnt_burned(Ledger) ->
         {ok, true} ->
             DefaultCF = default_cf(Ledger),
             case cache_get(Ledger, DefaultCF, ?HNT_BURNED, []) of
-                {ok, <<Burned:64/integer-unsigned-big>>} ->
+                {ok, <<Burned:64/integer-unsigned-native>>} ->
                     {ok, Burned};
                 not_found ->
                     {ok, 0};
@@ -2859,18 +2859,18 @@ add_hnt_burned(Burned, Ledger) ->
             DefaultCF = default_cf(Ledger),
             Prev =
                 case cache_get(Ledger, DefaultCF, ?HNT_BURNED, []) of
-                    {ok, <<P:64/integer-unsigned-big>>} -> P;
+                    {ok, <<P:64/integer-unsigned-native>>} -> P;
                     not_found -> 0
                 end,
             New = Prev + Burned,
-            cache_put(Ledger, DefaultCF, ?HNT_BURNED, <<New:64/integer-unsigned-big>>);
+            cache_put(Ledger, DefaultCF, ?HNT_BURNED, <<New:64/integer-unsigned-native>>);
         _ -> ok
     end.
 
 -spec clear_hnt_burned(ledger()) -> ok.
 clear_hnt_burned(Ledger) ->
     DefaultCF = default_cf(Ledger),
-    cache_put(Ledger, DefaultCF, ?HNT_BURNED, <<0:64/integer-unsigned-big>>).
+    cache_put(Ledger, DefaultCF, ?HNT_BURNED, <<0:64/integer-unsigned-native>>).
 
 -spec net_overage(ledger()) -> {ok, non_neg_integer()} | {error, any()}.
 net_overage(Ledger) ->
@@ -2878,7 +2878,7 @@ net_overage(Ledger) ->
         {ok, true} ->
             DefaultCF = default_cf(Ledger),
             case cache_get(Ledger, DefaultCF, ?NET_OVERAGE, []) of
-                {ok, <<Overage:64/integer-unsigned-big>>} ->
+                {ok, <<Overage:64/integer-unsigned-native>>} ->
                     {ok, Overage};
                 not_found ->
                     {ok, 0};
@@ -2893,7 +2893,7 @@ net_overage(Overage, Ledger) ->
     case blockchain:config(?net_emissions_enabled, Ledger) of
         {ok, true} ->
             DefaultCF = default_cf(Ledger),
-            cache_put(Ledger, DefaultCF, ?NET_OVERAGE, <<Overage:64/integer-unsigned-big>>);
+            cache_put(Ledger, DefaultCF, ?NET_OVERAGE, <<Overage:64/integer-unsigned-native>>);
         _ -> ok
     end.
 
