@@ -28,9 +28,32 @@ init_per_testcase(TestCase, Cfg0) ->
     Cfg1 = blockchain_ct_utils:init_base_dir_config(?MODULE, TestCase, Cfg0),
     Dir = ?config(base_dir, Cfg1),
     {ok, Sup, Keys={_, _}, _Opts} = test_utils:init(Dir),
+    {
+        ok,
+        _GenesisMembers,
+        _GenesisBlock,
+        ConsensusMembers,
+        {master_key, MasterKey={_, _}}
+    } =
+        test_utils:init_chain(
+            5000,
+            Keys,
+            true,
+            #{
+                %% Setting vars_commit_delay to 1 is crucial,
+                %% otherwise var changes will not take effect.
+                ?vars_commit_delay => 1
+            }
+        ),
+    N = length(ConsensusMembers),
+    ?assert(N > 0, N),
+    ?assertEqual(7, N),
+    Chain = blockchain_worker:blockchain(),
     [
         {sup, Sup},
-        {keys, Keys}
+        {master_key, MasterKey},
+        {consensus_members, ConsensusMembers},
+        {chain, Chain}
     |
         Cfg1
     ].
@@ -49,31 +72,14 @@ end_per_testcase(_TestCase, Cfg) ->
 %% Cases ----------------------------------------------------------------------
 
 version_change_test(Cfg) ->
-    {
-        ok,
-        _GenesisMembers,
-        _GenesisBlock,
-        ConsensusMembers,
-        {master_key, {Priv, _Pub}}
-    } =
-        test_utils:init_chain(
-            5000,
-            ?config(keys, Cfg),
-            true,
-            #{
-                %% Setting vars_commit_delay to 1 is crucial,
-                %% otherwise var changes will not take effect.
-                ?vars_commit_delay => 1
-            }
-        ),
-    N = length(ConsensusMembers),
-    ?assert(N > 0, N),
-    ?assertEqual(7, N),
-    Chain = blockchain_worker:blockchain(),
+    {Priv, _} = ?config(master_key, Cfg),
+    ConsensusMembers = ?config(consensus_members, Cfg),
+    Chain = ?config(chain, Cfg),
 
     Key = garbage_value,
 
     %% enable vars v1
+    %% (enabling them at init causes init failures, so we do it here, post init)
     ?assertMatch(ok, var_set(?chain_vars_version, 1, Priv, ConsensusMembers)),
     ?assertEqual({ok, 1}, var_get(?chain_vars_version, Chain)),
 
@@ -99,30 +105,12 @@ version_change_test(Cfg) ->
     ok.
 
 master_key_test(Cfg) ->
+    {Priv1, _Pub1} = ?config(master_key, Cfg),
+    ConsensusMembers = ?config(consensus_members, Cfg),
+    Chain = ?config(chain, Cfg),
+
     Key = garbage_value,
-    Val0 = init_garbage,
-    {
-        ok,
-        _GenesisMembers,
-        _GenesisBlock,
-        ConsensusMembers,
-        {master_key, {Priv1, _Pub1}}
-    } =
-        test_utils:init_chain(
-            5000,
-            ?config(keys, Cfg),
-            true,
-            #{
-                Key => Val0,
 
-                %% Setting vars_commit_delay to 1 is crucial,
-                %% otherwise var changes will not take effect.
-                ?vars_commit_delay => 1
-            }
-        ),
-    Chain = blockchain_worker:blockchain(),
-
-    ?assertEqual({ok, Val0}, var_get(Key, Chain)),
     Val1 = totes_goats_garb,
     ?assertMatch(ok, var_set(Key, Val1, Priv1, ConsensusMembers)),
     ?assertEqual({ok, Val1}, var_get(Key, Chain)),
