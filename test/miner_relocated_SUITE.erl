@@ -10,6 +10,7 @@
 ]).
 
 -export([
+    version_change_test/1,
     master_key_test/1
 ]).
 
@@ -17,10 +18,82 @@
 
 all() ->
     [
+        version_change_test,
         master_key_test
     ].
 
 %% Cases ----------------------------------------------------------------------
+
+version_change_test(Config) ->
+    %% get all the miners
+    Miners = ?config(miners, Config),
+    ConsensusMiners = ?config(consensus_miners, Config),
+
+
+    ?assertNotEqual([], ConsensusMiners),
+    ?assertEqual(7, length(ConsensusMiners)),
+
+    %% make sure that elections are rolling
+    ok = miner_ct_utils:wait_for_gte(epoch, Miners, 1),
+
+    %% baseline: old-style chain vars are working
+
+    Blockchain1 = ct_rpc:call(hd(Miners), blockchain_worker, blockchain, []),
+    {Priv, _Pub} = ?config(master_key, Config),
+
+    Vars = #{garbage_value => totes_goats_garb},
+    Proof = blockchain_txn_vars_v1:legacy_create_proof(Priv, Vars),
+    Txn1_0 = blockchain_txn_vars_v1:new(Vars, 2),
+    Txn1_1 = blockchain_txn_vars_v1:proof(Txn1_0, Proof),
+
+    _ = [ok = ct_rpc:call(Miner, blockchain_worker, submit_txn, [Txn1_1])
+         || Miner <- Miners],
+
+    ok = miner_ct_utils:wait_for_chain_var_update(Miners, garbage_value, totes_goats_garb),
+
+    %% switch chain version
+
+    Vars2 = #{?chain_vars_version => 2},
+    Proof2 = blockchain_txn_vars_v1:legacy_create_proof(Priv, Vars2),
+    Txn2_0 = blockchain_txn_vars_v1:new(Vars2, 3),
+    Txn2_1 = blockchain_txn_vars_v1:proof(Txn2_0, Proof2),
+
+    _ = [ok = ct_rpc:call(Miner, blockchain_worker, submit_txn, [Txn2_1])
+         || Miner <- Miners],
+
+    %% make sure that it has taken effect
+    ok = miner_ct_utils:wait_for_chain_var_update(Miners, ?chain_vars_version, 2),
+
+    %% try a new-style txn change
+
+    Vars3 = #{garbage_value => goats_are_not_garb},
+    Txn3_0 = blockchain_txn_vars_v1:new(Vars3, 4),
+    Proof3 = blockchain_txn_vars_v1:create_proof(Priv, Txn3_0),
+    Txn3_1 = blockchain_txn_vars_v1:proof(Txn3_0, Proof3),
+
+    _ = [ok = ct_rpc:call(Miner, blockchain_worker, submit_txn, [Txn3_1])
+         || Miner <- Miners],
+
+    ok = miner_ct_utils:wait_for_chain_var_update(Miners, garbage_value, goats_are_not_garb),
+
+    %% make sure old style is now closed off.
+
+    Vars4 = #{garbage_value => goats_are_too_garb},
+    Txn4_0 = blockchain_txn_vars_v1:new(Vars4, 5),
+    Proof4 = blockchain_txn_vars_v1:legacy_create_proof(Priv, Vars4),
+    Txn4_1 = blockchain_txn_vars_v1:proof(Txn4_0, Proof4),
+
+    {ok, Start4} = ct_rpc:call(hd(Miners), blockchain, height, [Blockchain1]),
+
+    _ = [ok = ct_rpc:call(Miner, blockchain_worker, submit_txn, [Txn4_1])
+         || Miner <- Miners],
+
+    %% wait until height has increased by 15
+    ok = miner_ct_utils:wait_for_gte(height, Miners, Start4 + 15),
+    %% and then confirm the transaction took hold
+    ok = miner_ct_utils:wait_for_chain_var_update(Miners, garbage_value, goats_are_not_garb),
+
+    ok.
 
 master_key_test(Cfg0) ->
     Cfg1 = blockchain_ct_utils:init_base_dir_config(?MODULE, master_key_test, Cfg0),
