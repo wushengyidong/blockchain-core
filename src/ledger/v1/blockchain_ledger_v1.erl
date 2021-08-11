@@ -2759,6 +2759,7 @@ debit_fee(Address, Fee, Ledger, MaybeTryImplicitBurn, TxnHash, Chain) ->
     case ?MODULE:find_dc_entry(Address, Ledger) of
         {error, dc_entry_not_found} when MaybeTryImplicitBurn == true ->
             {ok, FeeInHNT} = ?MODULE:dc_to_hnt(Fee, Ledger),
+            ok = add_hnt_burned(FeeInHNT, Ledger),
             ?MODULE:debit_fee_from_account(Address, FeeInHNT, Ledger, TxnHash, Chain);
         {error, _}=Error ->
             Error;
