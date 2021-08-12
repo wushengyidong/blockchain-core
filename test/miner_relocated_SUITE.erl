@@ -48,7 +48,7 @@ init_per_testcase(TestCase, Cfg0) ->
     N = length(ConsensusMembers),
     ?assert(N > 0, N),
     ?assertEqual(7, N),
-    Chain = blockchain_worker:blockchain(),
+    Chain = blockchain_worker:blockchain(), % TODO Return from init_chain instead
     [
         {sup, Sup},
         {master_key, MasterKey},
@@ -80,25 +80,37 @@ version_change_test(Cfg) ->
 
     %% enable vars v1
     %% (enabling them at init causes init failures, so we do it here, post init)
-    ?assertMatch(ok, var_set(?chain_vars_version, 1, Priv, ConsensusMembers)),
+    ?assertMatch(
+        ok,
+        var_set(?chain_vars_version, 1, Priv, ConsensusMembers, Chain)
+    ),
     ?assertEqual({ok, 1}, var_get(?chain_vars_version, Chain)),
 
     %% check that vars v1 are working
-    ?assertMatch(ok, var_set_legacy(Key, totes_goats_garb, Priv, ConsensusMembers)),
+    ?assertMatch(
+        ok,
+        var_set_legacy(Key, totes_goats_garb, Priv, ConsensusMembers, Chain)
+    ),
     ?assertEqual({ok, totes_goats_garb}, var_get(Key, Chain)),
 
     %% switch back to vars v2
-    ?assertMatch(ok, var_set_legacy(?chain_vars_version, 2, Priv, ConsensusMembers)),
+    ?assertMatch(
+        ok,
+        var_set_legacy(?chain_vars_version, 2, Priv, ConsensusMembers, Chain)
+    ),
     ?assertEqual({ok, 2}, var_get(?chain_vars_version, Chain)),
 
     %% check that vars v2 are working
-    ?assertMatch(ok, var_set(Key, goats_are_not_garb, Priv, ConsensusMembers)),
+    ?assertMatch(
+        ok,
+        var_set(Key, goats_are_not_garb, Priv, ConsensusMembers, Chain)
+    ),
     ?assertEqual({ok, goats_are_not_garb}, var_get(Key, Chain)),
 
     %% ensure vars v1 are no longer accepted
     ?assertMatch(
         {error, {invalid_txns, [{_, bad_block_proof}]}},
-        var_set_legacy(Key, goats_are_too_garb, Priv, ConsensusMembers)
+        var_set_legacy(Key, goats_are_too_garb, Priv, ConsensusMembers, Chain)
     ),
     ?assertEqual({ok, goats_are_not_garb}, var_get(Key, Chain)),
 
@@ -112,7 +124,7 @@ master_key_test(Cfg) ->
     Key = garbage_value,
 
     Val1 = totes_goats_garb,
-    ?assertMatch(ok, var_set(Key, Val1, Priv1, ConsensusMembers)),
+    ?assertMatch(ok, var_set(Key, Val1, Priv1, ConsensusMembers, Chain)),
     ?assertEqual({ok, Val1}, var_get(Key, Chain)),
 
     %% bad master key
@@ -146,17 +158,23 @@ master_key_test(Cfg) ->
     %% make sure old master key is no longer working
     ?assertMatch(
         {error, {invalid_txns, [{_, bad_block_proof}]}},
-        var_set(Key, goats_are_too_garb, Priv1, ConsensusMembers)
+        var_set(Key, goats_are_too_garb, Priv1, ConsensusMembers, Chain)
     ),
 
     %% double check that new master key works
-    ?assertMatch(ok, var_set(Key, goats_always_win, Priv2, ConsensusMembers)),
+    ?assertMatch(
+        ok,
+        var_set(Key, goats_always_win, Priv2, ConsensusMembers, Chain)
+    ),
     ?assertEqual({ok, goats_always_win}, var_get(Key, Chain)),
 
     %% test all the multikey stuff
 
     %% first enable them
-    ?assertMatch(ok, var_set(?use_multi_keys, true, Priv2, ConsensusMembers)),
+    ?assertMatch(
+        ok,
+        var_set(?use_multi_keys, true, Priv2, ConsensusMembers, Chain)
+    ),
 
     #{secret := Priv3, public := Pub3} = libp2p_crypto:generate_keys(ecc_compact),
     #{secret := Priv4, public := Pub4} = libp2p_crypto:generate_keys(ecc_compact),
@@ -182,7 +200,16 @@ master_key_test(Cfg) ->
     ok = block_add(Chain, ConsensusMembers, Txn7),
 
     %% try with only three keys (and succeed)
-    ?assertMatch(ok, var_set(Key, but_what_now, [Priv2, Priv3, Priv6], ConsensusMembers)),
+    ?assertMatch(
+        ok,
+        var_set(
+            Key,
+            but_what_now,
+            [Priv2, Priv3, Priv6],
+            ConsensusMembers,
+            Chain
+        )
+    ),
     ?assertMatch({ok, but_what_now}, var_get(Key, Chain)),
 
     %% try with only two keys (and fail)
@@ -221,7 +248,16 @@ master_key_test(Cfg) ->
     {error, {invalid_txns, [{_, too_many_proofs}]}} =
         block_add(Chain, ConsensusMembers, Txn11a),
 
-    ?assertMatch(ok, var_set(Key, sheep_are_inherently_unfunny, [Priv2, Priv3, Priv5, Priv6, Priv8], ConsensusMembers)),
+    ?assertMatch(
+        ok,
+        var_set(
+            Key,
+            sheep_are_inherently_unfunny,
+            [Priv2, Priv3, Priv5, Priv6, Priv8],
+            ConsensusMembers,
+            Chain
+        )
+    ),
     ?assertMatch({ok, sheep_are_inherently_unfunny}, var_get(Key, Chain)),
 
     Txn12_0 =
@@ -241,7 +277,16 @@ master_key_test(Cfg) ->
     ok = block_add(Chain, ConsensusMembers, Txn12),
     ?assertMatch({ok, so_true}, var_get(Key, Chain)),
 
-    ?assertMatch(ok, var_set(Key, lets_all_hate_on_sheep, [Priv5, Priv6, Priv7], ConsensusMembers)),
+    ?assertMatch(
+        ok,
+        var_set(
+            Key,
+            lets_all_hate_on_sheep,
+            [Priv5, Priv6, Priv7],
+            ConsensusMembers,
+            Chain
+        )
+    ),
     ?assertMatch({ok, lets_all_hate_on_sheep}, var_get(Key, Chain)),
     ok.
 
@@ -253,40 +298,30 @@ nonce_curr(Chain) ->
     {ok, Nonce} = blockchain_ledger_v1:vars_nonce(Ledger),
     Nonce.
 
--spec nonce_next() -> integer().
-nonce_next() ->
-    Chain = blockchain_worker:blockchain(),
-    nonce_next(Chain).
-
 -spec nonce_next(blockchain:blockchain()) -> integer().
 nonce_next(Chain) ->
     nonce_curr(Chain) + 1.
 
-var_set(Key, Val, PrivKey, ConsensusMembers) ->
-    Nonce = nonce_next(),
+var_set(Key, Val, PrivKey, ConsensusMembers, Chain) ->
+    Nonce = nonce_next(Chain),
     MakeTxn =
         case is_list(PrivKey) of
             true -> fun mvars/3;
             false -> fun vars/3
         end,
     Txn = MakeTxn(#{Key => Val}, Nonce, PrivKey),
-    block_add(ConsensusMembers, Txn).
+    block_add(Chain, ConsensusMembers, Txn).
 
-var_set_legacy(Key, Val, PrivKey, ConsensusMembers) ->
-    %% TODO Weave-in Chain
+var_set_legacy(Key, Val, PrivKey, ConsensusMembers, Chain) ->
     Vars = #{Key => Val},
-    Txn1 = blockchain_txn_vars_v1:new(Vars, nonce_next()),
+    Txn1 = blockchain_txn_vars_v1:new(Vars, nonce_next(Chain)),
     Proof = blockchain_txn_vars_v1:legacy_create_proof(PrivKey, Vars),
     Txn2 = blockchain_txn_vars_v1:proof(Txn1, Proof),
-    block_add(ConsensusMembers, Txn2).
+    block_add(Chain, ConsensusMembers, Txn2).
 
 var_get(Key, Chain) ->
     Ledger = blockchain:ledger(Chain),
     blockchain:config(Key, Ledger).
-
-block_add(ConsensusMembers, Txn) ->
-    Chain = blockchain_worker:blockchain(),
-    block_add(Chain, ConsensusMembers, Txn).
 
 -spec block_add(blockchain:blockchain(), [{_, {_, _, _}}], _) ->
     ok | {error, _}.
