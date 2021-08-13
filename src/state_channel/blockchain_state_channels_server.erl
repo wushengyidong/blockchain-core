@@ -436,7 +436,7 @@ handle_offer(SCOffer, HandlerPid, #state{db=DB, dc_payload_size=DCPayloadSize, a
                                     SignedPurchaseSC = blockchain_state_channel_v1:sign(PurchaseSC, OwnerSigFun),
                                     PacketHash = blockchain_state_channel_offer_v1:packet_hash(SCOffer),
                                     Region = blockchain_state_channel_offer_v1:region(SCOffer),
-                                    ok = blockchain_state_channel_handler:send_purchase(HandlerPid,
+                                    ok = blockchain_state_channel_common:send_purchase(HandlerPid,
                                                                                         SignedPurchaseSC,
                                                                                         Hotspot,
                                                                                         PacketHash,
@@ -995,7 +995,7 @@ send_banner(SC, Stream) ->
     %% NOTE: The banner itself is not signed, however, the state channel
     %% it contains should be signed already
     BannerMsg1 = blockchain_state_channel_banner_v1:new(SC),
-    blockchain_state_channel_handler:send_banner(Stream, BannerMsg1).
+    blockchain_state_channel_common:send_banner(Stream, BannerMsg1).
 
 -spec update_state_with_blooms(State :: state()) -> state().
 update_state_with_blooms(#state{state_channels=SCs}=State) when map_size(SCs) == 0 ->
