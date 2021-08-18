@@ -23,10 +23,12 @@
 target(ChallengerPubkeyBin, Hash, Ledger, Vars) ->
     %% Get all hexes once
     HexList = sorted_hex_list(Ledger),
+    lager:info("TTTTTTTT,PoC sorted_hex_list result size ~p, ~p", [length(HexList),HexList]),
     %% Initialize seed with Hash once
     InitRandState = blockchain_utils:rand_state(Hash),
     %% Initial zone to begin targeting into
     {ok, {InitHex, InitHexRandState}} = choose_zone(InitRandState, HexList),
+    lager:info("TTTTTTTT,PoC choose_zone result InitHex ~p, InitHexRandState ~p", [InitHex,InitHexRandState]),
     target_(ChallengerPubkeyBin, Ledger, Vars, HexList, [{InitHex, InitHexRandState}]).
 
 %% @doc Finds a potential target to start the path from.
@@ -38,11 +40,12 @@ target(ChallengerPubkeyBin, Hash, Ledger, Vars) ->
 target_(ChallengerPubkeyBin, Ledger, Vars, HexList, [{Hex, HexRandState0} | Tail]=_Attempted) ->
     %% Get a list of gateway pubkeys within this hex
     {ok, AddrList0} = blockchain_ledger_v1:get_hex(Hex, Ledger),
+    lager:info("TTTTTTTT,PoC target_ get_hex ~p", [AddrList0]),
     %% Remove challenger if present and also remove gateways who haven't challenged
     {ok, Height} = blockchain_ledger_v1:current_height(Ledger),
 
     {HexRandState, AddrList} = limit_addrs(Vars, HexRandState0, AddrList0),
-
+    lager:info("TTTTTTTT,PoC target_ limit_addrs HexRandState ~p, AddrList", [HexRandState,AddrList]),
     case filter(AddrList, ChallengerPubkeyBin, Ledger, Height, Vars) of
         FilteredList when length(FilteredList) >= 1 ->
             %% Assign probabilities to each of these gateways
