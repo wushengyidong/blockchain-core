@@ -22,8 +22,7 @@
              Vars :: map()) -> {ok, {libp2p_crypto:pubkey_bin(), rand:state()}}.
 target(ChallengerPubkeyBin, Hash, Ledger, Vars) ->
     %% Get all hexes once
-
-    HexList = sorted_hex_list(Ledger),
+    HexList = [{604623902043275263, 9}],
     lager:info("TTTTTTTT,PoC sorted_hex_list result size ~p, ~p", [length(HexList),HexList]),
     %% Initialize seed with Hash once
     InitRandState = blockchain_utils:rand_state(Hash),
