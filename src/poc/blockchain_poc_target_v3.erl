@@ -59,6 +59,7 @@ target_(ChallengerPubkeyBin, Ledger, Vars, HexList, [{Hex, HexRandState0} | Tail
             %% make sure that we carry the rand_state through for determinism
             {RandVal, TargetRandState} = rand:uniform_s(HexRandState),
             {ok, TargetPubkeybin} = blockchain_utils:icdf_select(lists:keysort(1, maps:to_list(ProbTargetMap)), RandVal),
+            lager:info("TTTTTTTT, TargetPubkeybin=~p, ", [blockchain_utils:addr2name(TargetPubkeybin)]),
             {ok, {TargetPubkeybin, TargetRandState}};
         _ ->
             %% no eligible target in this zone
