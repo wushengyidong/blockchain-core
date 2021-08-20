@@ -22,8 +22,8 @@
              Vars :: map()) -> {ok, {libp2p_crypto:pubkey_bin(), rand:state()}}.
 target(ChallengerPubkeyBin, Hash, Ledger, Vars) ->
     %% Get all hexes once
-    %%HexList = sorted_hex_list(Ledger),
-    HexList = [{604623902043275263, 9}],
+
+    HexList = sorted_hex_list(Ledger),
     lager:info("TTTTTTTT,PoC sorted_hex_list result size ~p, ~p", [length(HexList),HexList]),
     %% Initialize seed with Hash once
     InitRandState = blockchain_utils:rand_state(Hash),
@@ -46,7 +46,7 @@ target_(ChallengerPubkeyBin, Ledger, Vars, HexList, [{Hex, HexRandState0} | Tail
     {ok, Height} = blockchain_ledger_v1:current_height(Ledger),
 
     {HexRandState, AddrList} = limit_addrs(Vars, HexRandState0, AddrList0),
-    lager:info("TTTTTTTT,PoC target_ limit_addrs HexRandState ~p, AddrList=~p", [HexRandState,AddrList]),
+    lager:info("TTTTTTTT,PoC target_ limit_addrs HexRandState ~p, AddrList", [HexRandState,AddrList]),
     case filter(AddrList, ChallengerPubkeyBin, Ledger, Height, Vars) of
         FilteredList when length(FilteredList) >= 1 ->
             %% Assign probabilities to each of these gateways
@@ -71,7 +71,7 @@ target_(ChallengerPubkeyBin, Ledger, Vars, HexList, [{Hex, HexRandState0} | Tail
 
 %% @doc Filter gateways based on these conditions:
 %% - Inactive gateways (those which haven't challenged in a long time).
-%% - Dont target the challenger gateway itself.disable_poc_v4_target_challenge_age
+%% - Dont target the challenger gateway itself.
 %% - Dont target GWs which do not have the releveant capability
 -spec filter(AddrList :: [libp2p_crypto:pubkey_bin()],
              ChallengerPubkeyBin :: libp2p_crypto:pubkey_bin(),
