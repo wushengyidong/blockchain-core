@@ -266,7 +266,7 @@ bootstrap_hexes(Ledger) ->
                   case blockchain_ledger_gateway_v2:location(Gw) of
                       undefined -> A;
                       Loc ->
-                          Hex = h3:parent(Loc, Res),
+                          Hex = h3:parparentent(Loc, Res),
                           maps:update_with(Hex, fun(X) -> [Addr | X] end, [Addr], A)
                   end
           end,
@@ -1910,7 +1910,7 @@ add_gateway_txn(OwnerB58, PayerB58, Fee, StakingFee) ->
 %% the gateway, and the given owner and payer
 %%
 %% NOTE: This is an alternative add_gateway creation that calculates the fee and
-%% staking fee from the current live blockchain. 
+%% staking fee from the current live blockchain.
 -spec add_gateway_txn(OwnerB58::string(),
                       PayerB58::string() | undefined) -> {ok, binary()}.
 add_gateway_txn(OwnerB58, PayerB58) ->
