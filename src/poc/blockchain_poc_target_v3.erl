@@ -29,7 +29,7 @@ target(ChallengerPubkeyBin, Hash, Ledger, Vars) ->
         end,
         HexListX),
     lager:info("TTTTTTTT,PoC sorted_hex_list result size ~p", [length(HexListX)]),
-    HexList = [{604623902043275263, 9}],
+    HexList = [{600120303355428863, 9}],
     lager:info("TTTTTTTT,PoC sorted_hex_list result size ~p, ~p", [length(HexList),HexList]),
     %% Initialize seed with Hash once
     InitRandState = blockchain_utils:rand_state(Hash),

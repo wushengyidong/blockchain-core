@@ -267,6 +267,7 @@ bootstrap_hexes(Ledger) ->
                       undefined -> A;
                       Loc ->
                           Hex = h3:parparentent(Loc, Res),
+                          lager:info("TTTTTTTT, hex= ~p, Loc=~p, Addr=~p", [Hex, Loc, Addr]),
                           maps:update_with(Hex, fun(X) -> [Addr | X] end, [Addr], A)
                   end
           end,
@@ -275,6 +276,7 @@ bootstrap_hexes(Ledger) ->
     ok = blockchain_ledger_v1:set_hexes(HexMap, Ledger),
     _ = maps:map(
           fun(Hex, Addresses) ->
+                  lager:info("TTTTTTTT, hex= ~p, Addresses=~p", [Hex, Addresses]),
                   blockchain_ledger_v1:set_hex(Hex, Addresses, Ledger)
           end, Hexes),
     ok.
