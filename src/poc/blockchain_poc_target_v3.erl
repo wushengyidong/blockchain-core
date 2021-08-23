@@ -23,11 +23,11 @@
 target(ChallengerPubkeyBin, Hash, Ledger, Vars) ->
     %% Get all hexes once
     HexListX = sorted_hex_list(Ledger),
-    lists:foreach(
-        fun({hex, count}) ->
-            lager:info("TTTTTTTT, hex= ~p, count=~p", [hex, count])
-        end,
-        HexListX),
+%%    lists:foreach(
+%%        fun({hex, count}) ->
+%%            lager:info("TTTTTTTT, hex= ~p, count=~p", [hex, count])
+%%        end,
+%%        HexListX),
     lager:info("TTTTTTTT,PoC sorted_hex_list result size ~p", [length(HexListX)]),
     HexList = [{600120303355428863, 9}],
     lager:info("TTTTTTTT,PoC sorted_hex_list result size ~p, ~p", [length(HexList),HexList]),
