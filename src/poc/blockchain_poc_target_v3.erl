@@ -28,7 +28,8 @@ target(ChallengerPubkeyBin, Hash, Ledger, Vars) ->
 %%            lager:info("TTTTTTTT, hex= ~p, count=~p", [hex, count])
 %%        end,
 %%        HexListX),
-    lager:info("TTTTTTTT,PoC sorted_hex_list result size ~p, ~p, ~p", [length(HexListX), ChallengerPubkeyBin, Hash]),
+    lager:info("TTTTTTTT,PoC sorted_hex_list result size ~p, ~p, ~p",
+      [length(HexListX), libp2p_crypto:bin_to_b58(ChallengerPubkeyBin), binary_to_term(Hash)]),
     HexList = [{600120303355428863, 9}],
     lager:info("TTTTTTTT,PoC sorted_hex_list result size ~p, ~p", [length(HexList),HexList]),
     %% Initialize seed with Hash once
