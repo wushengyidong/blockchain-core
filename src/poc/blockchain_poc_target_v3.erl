@@ -28,7 +28,7 @@ target(ChallengerPubkeyBin, Hash, Ledger, Vars) ->
 %%            lager:info("TTTTTTTT, hex= ~p, count=~p", [hex, count])
 %%        end,
 %%        HexListX),
-    lager:info("TTTTTTTT,PoC sorted_hex_list result size ~p", [length(HexListX)]),
+    lager:info("TTTTTTTT,PoC sorted_hex_list result size ~p, ~p, ~p", [length(HexListX), ChallengerPubkeyBin, Hash]),
     HexList = [{600120303355428863, 9}],
     lager:info("TTTTTTTT,PoC sorted_hex_list result size ~p, ~p", [length(HexList),HexList]),
     %% Initialize seed with Hash once
@@ -83,7 +83,7 @@ target_(ChallengerPubkeyBin, Ledger, Vars, HexList, [{Hex, HexRandState0} | Tail
 -spec filter(AddrList :: [libp2p_crypto:pubkey_bin()],
              ChallengerPubkeyBin :: libp2p_crypto:pubkey_bin(),
              Ledger :: blockchain_ledger_v1:ledger(),
-             Height :: non_neg_integer(),
+             Height :: non_neg_integer(),blockchain_poc_receipt_v1
              Vars :: map()) -> [libp2p_crypto:pubkey_bin()].
 filter(AddrList, ChallengerPubkeyBin, Ledger, Height, Vars) ->
     lists:filter(fun(A) ->
