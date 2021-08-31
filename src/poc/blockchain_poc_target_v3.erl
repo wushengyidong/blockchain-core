@@ -84,7 +84,7 @@ target_(ChallengerPubkeyBin, Ledger, Vars, HexList, [{Hex, HexRandState0} | Tail
 -spec filter(AddrList :: [libp2p_crypto:pubkey_bin()],
              ChallengerPubkeyBin :: libp2p_crypto:pubkey_bin(),
              Ledger :: blockchain_ledger_v1:ledger(),
-             Height :: non_neg_integer(),blockchain_poc_receipt_v1
+             Height :: non_neg_integer(),
              Vars :: map()) -> [libp2p_crypto:pubkey_bin()].
 filter(AddrList, ChallengerPubkeyBin, Ledger, Height, Vars) ->
     lists:filter(fun(A) ->
