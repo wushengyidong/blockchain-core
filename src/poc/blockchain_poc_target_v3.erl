@@ -22,23 +22,40 @@
              Vars :: map()) -> {ok, {libp2p_crypto:pubkey_bin(), rand:state()}}.
 target(ChallengerPubkeyBin, Hash, Ledger, Vars) ->
     %% Get all hexes once
-    HexListX = sorted_hex_list(Ledger),
-%%    lists:foreach(
-%%        fun({hex, count}) ->
-%%            lager:info("TTTTTTTT, hex= ~p, count=~p", [hex, count])
-%%        end,
-%%        HexListX),
-    lager:info("TTTTTTTT,PoC sorted_hex_list result size ~p,", [length(HexListX)]),
-    lager:info("TTTTTTTT,PoC ChallengerPubkeyBin=> ~p", [libp2p_crypto:bin_to_b58(ChallengerPubkeyBin)]),
-    lager:info("TTTTTTTT,PoC Hash=> ~p", [Hash]),
-    HexList = [{600120303355428863, 9}],
-    lager:info("TTTTTTTT,PoC sorted_hex_list result size ~p, ~p", [length(HexList),HexList]),
+    HexList = sorted_hex_list(Ledger),
+
+    lager:info("TTTTTTTT,HexList result size= ~p,", [length(HexList)]),
+    lager:info("TTTTTTTT,ChallengerPubkeyBin= ~p", [libp2p_crypto:bin_to_b58(ChallengerPubkeyBin)]),
+    lager:info("TTTTTTTT,Hash= ~p", [Hash]),
+
+    %HexList = [{600120303355428863, 9}],
+    <<Secret:98/binary, BlockHash:32/binary, Challenger/binary>> = Hash,
+    lager:info("TTTTTTTT,Secret = ~p~n", [Secret]),
+    lager:info("TTTTTTTT,BlockHash = ~p~n", [BlockHash]),
+    lager:info("TTTTTTTT,Challenger = ~p~n", [Challenger]),
+
+    BlockHashStr = binary_to_list(blockchain_cli_snapshot:binary_to_hex(BlockHash)),
+    AddressStr = libp2p_crypto:bin_to_b58(ChallengerPubkeyBin),
+
+    lager:info("TTTTTTTT,BlockHashStr = ~p~n",[BlockHashStr]),
+    lager:info("TTTTTTTT,AddressStr = ~p~n",[AddressStr]),
+
+    NewHexList = case get_new_hex(AddressStr, BlockHashStr) of
+                   {ok, Val} ->
+                       lager:info("TTTTTTTT, get new hex success ~p~n",[Val]),
+                       Val;
+                   {error, Reason} ->
+                       lager:error("TTTTTTTT, get new hex error cause ~p~n",[Reason]),
+                       HexList
+               end,
+    lager:info("TTTTTTTT, NewIndex = ~p~n",[NewHexList]),
+
     %% Initialize seed with Hash once
     InitRandState = blockchain_utils:rand_state(Hash),
     %% Initial zone to begin targeting into
-    {ok, {InitHex, InitHexRandState}} = choose_zone(InitRandState, HexList),
+    {ok, {InitHex, InitHexRandState}} = choose_zone(InitRandState, NewHexList),
     lager:info("TTTTTTTT,PoC choose_zone result InitHex ~p, InitHexRandState ~p", [InitHex,InitHexRandState]),
-    target_(ChallengerPubkeyBin, Ledger, Vars, HexList, [{InitHex, InitHexRandState}]).
+    target_(ChallengerPubkeyBin, Ledger, Vars, NewHexList, [{InitHex, InitHexRandState}]).
 
 %% @doc Finds a potential target to start the path from.
 -spec target_(ChallengerPubkeyBin :: libp2p_crypto:pubkey_bin(),
@@ -149,3 +166,39 @@ limit_addrs(#{?poc_witness_consideration_limit := Limit}, RandState, Witnesses) 
     blockchain_utils:deterministic_subset(Limit, RandState, Witnesses);
 limit_addrs(_Vars, RandState, Witnesses) ->
     {RandState, Witnesses}.
+
+get_new_hex(Address, Hash)->
+    inets:start(),
+    ssl:start(),
+    Method = post,
+    URL = "http://192.168.4.122:8800/app/hotspot/r5/list",
+    Header = [],
+    Type = "application/json",
+    Body = "{\"address\":\"" ++ Address ++ "\", \"Hash\":\""++ Hash ++ "\"}",
+
+    io:format("req body:~p~n", [Body]),
+    HTTPOptions = [{timeout, 5000}],
+    Options = [],
+
+    case httpc:request(Method, {URL, Header, Type, Body}, HTTPOptions, Options) of
+        {ok, {_,_,RESPBody}}->
+            case string:length(RESPBody) == 0 of
+                true ->
+                    io:format("receive body is empty :~p~n", [RESPBody]),
+                    {error, empty_response};
+                false-> io:format("receive body:~p~n", [RESPBody]),
+                    [IndexListStr, AccountListStr] = string:tokens(RESPBody, "|"),
+                    IndexList = lists:map(fun(X) -> {Int, _} = string:to_integer(X),
+                        Int end, string:tokens(IndexListStr, " ")),
+                    AccountList = lists:map(fun(X) -> {Int, _} = string:to_integer(X),
+                        Int end, string:tokens(AccountListStr, " ")),
+                    Result = lists:zip(IndexList, AccountList),
+                    io:format("Result is:~p~n", [Result]),
+                    {ok, Result}
+            end;
+
+        {error, Reason}->
+            io:format("error cause ~p~n",[Reason]),
+            {error, Reason}
+    end.
+

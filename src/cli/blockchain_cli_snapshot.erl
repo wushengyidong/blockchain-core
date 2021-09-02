@@ -10,7 +10,9 @@
 -export([register_cli/0]).
 
 -export([snapshot_take/1,
-         snapshot_load/1]).
+         snapshot_load/1,
+         binary_to_hex/1
+  ]).
 
 register_cli() ->
     register_all_usage(),
