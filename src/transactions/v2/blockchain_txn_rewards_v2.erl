@@ -148,6 +148,39 @@ is_valid(Txn, Chain) ->
 absorb(Txn, Chain) ->
     Ledger = blockchain:ledger(Chain),
 
+    case blockchain:config(?net_emissions_enabled, Ledger) of
+        {ok, true} ->
+            %% initial proposed max 34.24
+            {ok, Max} = blockchain:config(?net_emissions_max_rate, Ledger),
+            {ok, Burned} = blockchain_ledger_v1:hnt_burned(Ledger),
+            {ok, Overage} = blockchain_ledger_v1:net_overage(Ledger),
+
+            %% clear this since we have it already
+            ok = blockchain_ledger_v1:clear_hnt_burned(Ledger),
+
+            case Burned > Max of
+                %% if burned > max, then add (burned - max) to overage
+                true ->
+                    Overage1 = Overage + (Burned - Max),
+                    ok = blockchain_ledger_v1:net_overage(Overage1, Ledger);
+                %% else we may have pulled from overage to the tune of
+                %% max - burned
+                 _ ->
+                    %% here we pulled from overage up to max
+                    case (Max - Burned) < Overage  of
+                        %% emitted max, pulled from overage
+                        true ->
+                            Overage1 = Overage - (Max - Burned),
+                            ok = blockchain_ledger_v1:net_overage(Overage1, Ledger);
+                        %% not enough overage to emit up to max, 0 overage
+                        _ ->
+                            ok = blockchain_ledger_v1:net_overage(0, Ledger)
+                    end
+            end;
+        _ ->
+            ok
+    end,
+
     case blockchain_ledger_v1:mode(Ledger) == aux of
         false ->
             %% only absorb in the main ledger
@@ -275,12 +308,20 @@ calculate_rewards_metadata(Start, End, Chain) ->
         %% so we will do that top level work here. If we get a thrown error while
         %% we are folding, we will abort reward calculation.
         Results0 = fold_blocks_for_rewards(Start, End, Chain,
-                                          Vars, Ledger, AccInit),
+                                           Vars, Ledger, AccInit),
 
-        %% Forcing calculation of the EpochReward amount for the CG to always
+        %% Prior to HIP 28 (reward_version <6), force EpochReward amount for the CG to always
         %% be around ElectionInterval (30 blocks) so that there is less incentive
-        %% to stay in the consensus group
-        ConsensusEpochReward = calculate_epoch_reward(1, Start, End, Ledger),
+        %% to stay in the consensus group. With HIP 28, relax that to be up to election_interval +
+        %% election_retry_interval to allow for time for election to complete.
+        ConsensusEpochReward =
+            case maps:get(reward_version, Vars) of
+               RewardVersion when RewardVersion >= 6 ->
+                    calculate_consensus_epoch_reward(Start, End, Vars, Ledger);
+                _ ->
+                    calculate_epoch_reward(1, Start, End, Ledger)
+            end,
+
         Vars1 = Vars#{ consensus_epoch_reward => ConsensusEpochReward },
 
         Results = finalize_reward_calculations(Results0, Ledger, Vars1),
@@ -343,7 +384,10 @@ to_json(Txn, Opts) ->
             Start = blockchain_txn_rewards_v2:start_epoch(Txn),
             End = ?MODULE:end_epoch(Txn),
             {ok, Ledger} = blockchain:ledger_at(End, Chain),
-            {ok, Metadata} = ?MODULE:calculate_rewards_metadata(Start, End, Chain),
+            {ok, Metadata} = case lists:keyfind(rewards_metadata, 1, Opts) of
+                                {rewards_metadata, M} -> {ok, M};
+                                _ -> ?MODULE:calculate_rewards_metadata(Start, End, Chain)
+                            end,
             maps:fold(
                 fun(overages, Amount, Acc) ->
                         [#{amount => Amount,
@@ -629,6 +673,15 @@ get_reward_vars(Start, End, Ledger) ->
                           _ -> undefined
                       end,
 
+    {ok, ElectionInterval} = blockchain:config(?election_interval, Ledger),
+    {ok, ElectionRestartInterval} = blockchain:config(?election_restart_interval, Ledger),
+    {ok, BlockTime} = blockchain:config(?block_time, Ledger),
+
+    WitnessRewardDecayRate = case blockchain:config(?witness_reward_decay_rate, Ledger) of
+                                 {ok, Dec} -> Dec;
+                                 _ -> undefined
+                             end,
+
     EpochReward = calculate_epoch_reward(Start, End, Ledger),
     #{
         monthly_reward => MonthlyReward,
@@ -647,7 +700,11 @@ get_reward_vars(Start, End, Ledger) ->
         witness_redundancy => WitnessRedundancy,
         poc_reward_decay_rate => DecayRate,
         density_tgt_res => DensityTgtRes,
-        hip15_tx_reward_unit_cap => HIP15TxRewardUnitCap
+        hip15_tx_reward_unit_cap => HIP15TxRewardUnitCap,
+        election_interval => ElectionInterval,
+        election_restart_interval => ElectionRestartInterval,
+        block_time => BlockTime,
+        witness_reward_decay_rate => WitnessRewardDecayRate
     }.
 
 -spec calculate_epoch_reward(pos_integer(), pos_integer(), blockchain_ledger_v1:ledger()) -> float().
@@ -663,11 +720,37 @@ calculate_epoch_reward(Version, Start, End, Ledger) ->
     {ok, ElectionInterval} = blockchain:config(?election_interval, Ledger),
     {ok, BlockTime0} = blockchain:config(?block_time, Ledger),
     {ok, MonthlyReward} = blockchain:config(?monthly_reward, Ledger),
-    calculate_epoch_reward(Version, Start, End, BlockTime0, ElectionInterval, MonthlyReward).
+    calculate_epoch_reward(Version, Start, End, BlockTime0,
+                           ElectionInterval, MonthlyReward, Ledger).
+
+calculate_net_emissions_reward(Ledger) ->
+    case blockchain:config(?net_emissions_enabled, Ledger) of
+        {ok, true} ->
+            %% initial proposed max 34.24
+            {ok, Max} = blockchain:config(?net_emissions_max_rate, Ledger),
+            {ok, Burned} = blockchain_ledger_v1:hnt_burned(Ledger),
+            {ok, Overage} = blockchain_ledger_v1:net_overage(Ledger),
+            min(Max, Burned + Overage);
+        _ ->
+            0
+    end.
 
 -spec calculate_epoch_reward(pos_integer(), pos_integer(), pos_integer(),
-                             pos_integer(), pos_integer(), pos_integer()) -> float().
-calculate_epoch_reward(Version, Start, End, BlockTime0, _ElectionInterval, MonthlyReward) when Version >= 2 ->
+                             pos_integer(), pos_integer(), pos_integer(),
+                             blockchain_ledger_v1:ledger()) -> float().
+calculate_epoch_reward(Version, Start, End, BlockTime0, _ElectionInterval, MonthlyReward, Ledger) when Version >= 6 ->
+    BlockTime1 = (BlockTime0/1000),
+    % Convert to blocks per min
+    BlockPerMin = 60/BlockTime1,
+    % Convert to blocks per hour
+    BlockPerHour = BlockPerMin*60,
+    % Calculate election interval in blocks
+    ElectionInterval = End - Start + 1, % epoch is inclusive of start and end
+    ElectionPerHour = BlockPerHour/ElectionInterval,
+    Reward = MonthlyReward/30/24/ElectionPerHour,
+    Extra = calculate_net_emissions_reward(Ledger),
+    Reward + Extra;
+calculate_epoch_reward(Version, Start, End, BlockTime0, _ElectionInterval, MonthlyReward, Ledger) when Version >= 2 ->
     BlockTime1 = (BlockTime0/1000),
     % Convert to blocks per min
     BlockPerMin = 60/BlockTime1,
@@ -676,8 +759,10 @@ calculate_epoch_reward(Version, Start, End, BlockTime0, _ElectionInterval, Month
     % Calculate election interval in blocks
     ElectionInterval = End - Start,
     ElectionPerHour = BlockPerHour/ElectionInterval,
-    MonthlyReward/30/24/ElectionPerHour;
-calculate_epoch_reward(_Version, _Start, _End, BlockTime0, ElectionInterval, MonthlyReward) ->
+    Reward = MonthlyReward/30/24/ElectionPerHour,
+    Extra = calculate_net_emissions_reward(Ledger),
+    Reward + Extra;
+calculate_epoch_reward(_Version, _Start, _End, BlockTime0, ElectionInterval, MonthlyReward, Ledger) ->
     BlockTime1 = (BlockTime0/1000),
     % Convert to blocks per min
     BlockPerMin = 60/BlockTime1,
@@ -685,7 +770,30 @@ calculate_epoch_reward(_Version, _Start, _End, BlockTime0, ElectionInterval, Mon
     BlockPerHour = BlockPerMin*60,
     % Calculate number of elections per hour
     ElectionPerHour = BlockPerHour/ElectionInterval,
-    MonthlyReward/30/24/ElectionPerHour.
+    Reward = MonthlyReward/30/24/ElectionPerHour,
+    Extra = calculate_net_emissions_reward(Ledger),
+    Reward + Extra.
+
+
+
+-spec calculate_consensus_epoch_reward(pos_integer(), pos_integer(),
+                                       map(), blockchain_ledger_v1:ledger()) -> float().
+calculate_consensus_epoch_reward(Start, End, Vars, Ledger) ->
+
+    #{ block_time := BlockTime0,
+       election_interval := ElectionInterval,
+       election_restart_interval := ElectionRestartInterval,
+       monthly_reward := MonthlyReward } = Vars,
+    BlockTime1 = (BlockTime0/1000),
+    % Convert to blocks per min
+    BlockPerMin = 60/BlockTime1,
+    % Convert to blocks per month
+    BlockPerMonth = BlockPerMin*60*24*30,
+    % Calculate epoch length in blocks, cap at election interval + grace period
+    EpochLength = erlang:min(End - Start + 1, ElectionInterval + ElectionRestartInterval),
+    Reward = (MonthlyReward/BlockPerMonth) * EpochLength,
+    Extra = calculate_net_emissions_reward(Ledger),
+    Reward + Extra.
 
 -spec consensus_members_rewards(blockchain_ledger_v1:ledger(),
                                 reward_vars(),
@@ -1039,8 +1147,8 @@ poc_witness_reward(Txn, AccIn,
                                          lists:foldl(
                                            fun(WitnessRecord, Acc2) ->
                                                    Witness = blockchain_poc_witness_v1:gateway(WitnessRecord),
-                                                   I = maps:get(Witness, Acc2, 0),
-                                                   maps:put(Witness, I+ToAdd, Acc2)
+                                                   {C, I} = maps:get(Witness, Acc2, {0, 0}),
+                                                   maps:put(Witness, {C+1, I+(ToAdd * witness_decay(C, Vars))}, Acc2)
                                            end,
                                            Acc1,
                                            ValidWitnesses);
@@ -1062,8 +1170,8 @@ poc_witness_reward(Txn, AccIn,
                                                                                       D,
                                                                                       Ledger)),
                                                    Value = blockchain_utils:normalize_float(ToAdd * RxScale),
-                                                   I = maps:get(Witness, Acc2, 0),
-                                                   maps:put(Witness, I+Value, Acc2)
+                                                   {C, I} = maps:get(Witness, Acc2, {0, 0}),
+                                                   maps:put(Witness, {C+1, I+(Value * witness_decay(C, Vars))}, Acc2)
                                            end,
                                            Acc1,
                                            ValidWitnesses)
@@ -1078,7 +1186,7 @@ poc_witness_reward(Txn, AccIn,
             AccIn
     end;
 poc_witness_reward(Txn, AccIn, _Chain, Ledger,
-                   #{ poc_version := POCVersion }) when is_integer(POCVersion)
+                   #{ poc_version := POCVersion } = Vars) when is_integer(POCVersion)
                                                         andalso POCVersion > 4 ->
     lists:foldl(
       fun(Elem, A) ->
@@ -1089,8 +1197,8 @@ poc_witness_reward(Txn, AccIn, _Chain, Ledger,
                       lists:foldl(
                         fun(WitnessRecord, Map) ->
                                 Witness = blockchain_poc_witness_v1:gateway(WitnessRecord),
-                                I = maps:get(Witness, Map, 0),
-                                maps:put(Witness, I+1, Map)
+                                {C, I} = maps:get(Witness, Map, {0, 0}),
+                                maps:put(Witness, {C+1, I+(1 * witness_decay(C, Vars))}, Map)
                         end,
                         A,
                         GoodQualityWitnesses)
@@ -1099,14 +1207,14 @@ poc_witness_reward(Txn, AccIn, _Chain, Ledger,
       AccIn,
       blockchain_txn_poc_receipts_v1:path(Txn)
      );
-poc_witness_reward(Txn, AccIn, _Chain, _Ledger, _Vars) ->
+poc_witness_reward(Txn, AccIn, _Chain, _Ledger, Vars) ->
     lists:foldl(
       fun(Elem, A) ->
               lists:foldl(
                 fun(WitnessRecord, Map) ->
                         Witness = blockchain_poc_witness_v1:gateway(WitnessRecord),
-                        I = maps:get(Witness, Map, 0),
-                        maps:put(Witness, I+1, Map)
+                        {C, I} = maps:get(Witness, Map, {0, 0}),
+                        maps:put(Witness, {C+1, I+(1 * witness_decay(C, Vars))}, Map)
                 end,
                 A,
                 blockchain_poc_path_element_v1:witnesses(Elem))
@@ -1118,11 +1226,11 @@ poc_witness_reward(Txn, AccIn, _Chain, _Ledger, _Vars) ->
                                  Vars :: reward_vars() ) -> rewards_map().
 normalize_witness_rewards(WitnessRewards, #{epoch_reward := EpochReward,
                                             poc_witnesses_percent := PocWitnessesPercent}=Vars) ->
-    TotalWitnesses = lists:sum(maps:values(WitnessRewards)),
+    TotalWitnesses = lists:sum(element(2, lists:unzip(maps:values(WitnessRewards)))),
     ShareOfDCRemainder = share_of_dc_rewards(poc_witnesses_percent, Vars),
     WitnessesReward = (EpochReward * PocWitnessesPercent) + ShareOfDCRemainder,
     maps:fold(
-        fun(Witness, Witnessed, Acc) ->
+        fun(Witness, {_Count, Witnessed}, Acc) ->
             PercentofReward = (Witnessed*100/TotalWitnesses)/100,
             Amount = erlang:round(PercentofReward*WitnessesReward),
             maps:put({gateway, poc_witnesses, Witness}, Amount, Acc)
@@ -1359,6 +1467,17 @@ share_of_dc_rewards(Key, Vars=#{dc_remainder := DCRemainder}) ->
                       + maps:get(poc_witnesses_percent, Vars))))
                 ).
 
+witness_decay(Count, Vars) ->
+    case maps:find(witness_reward_decay_rate, Vars) of
+        {ok, undefined} ->
+            1;
+        {ok, DecayRate} ->
+            Scale = math:exp(Count * -1 * DecayRate),
+            lager:info("scaling witness reward by ~p", [Scale]),
+            Scale;
+        _ ->
+            1
+    end.
 
 %% ------------------------------------------------------------------
 %% EUNIT Tests
@@ -1818,5 +1937,61 @@ common_poc_vars() ->
         ?poc_v4_target_score_curve => 5,
         ?poc_v5_target_prob_randomness_wt => 0.0
     }.
+
+
+hip28_calc_test() ->
+    {timeout, 30000,
+     fun() ->
+             meck:new(blockchain_ledger_v1, [passthrough]),
+             meck:expect(blockchain_ledger_v1, hnt_burned,
+                         fun(_Ledger) ->
+                                 0
+                         end),
+             meck:expect(blockchain_ledger_v1, net_overage,
+                         fun(_Ledger) ->
+                                 0
+                         end),
+             meck:expect(blockchain_ledger_v1, config,
+                         fun(_, _Ledger) ->
+                                 0
+                         end),
+
+                                                % set test vars such that rewards are 1 per block
+             Vars = #{ block_time => 60000,
+                       election_interval => 30,
+                       election_restart_interval => 5,
+                       monthly_reward => 43200,
+                       reward_version => 6 },
+             ?assertEqual(30.0, calculate_consensus_epoch_reward(1, 30, Vars, ledger)),
+             ?assertEqual(35.0, calculate_consensus_epoch_reward(1, 50, Vars, ledger)),
+             meck:unload(blockchain_ledger_v1),
+             ok
+     end}.
+
+consensus_epoch_reward_test() ->
+    {timeout, 30000,
+     fun() ->
+             meck:new(blockchain_ledger_v1, [passthrough]),
+             meck:expect(blockchain_ledger_v1, hnt_burned,
+                         fun(_Ledger) ->
+                                 0
+                         end),
+             meck:expect(blockchain_ledger_v1, net_overage,
+                         fun(_Ledger) ->
+                                 0
+                         end),
+             meck:expect(blockchain_ledger_v1, config,
+                         fun(_, _Ledger) ->
+                                 0
+                         end),
+
+             %% using test values such that reward is 1 per block
+             %% should always return the election interval as the answer
+             ?assertEqual(30.0,calculate_epoch_reward(1, 1, 25, 60000, 30, 43200, ledger)),
+
+             %% more than 30 blocks should return 30
+             ?assertEqual(30.0,calculate_epoch_reward(1, 1, 50, 60000, 30, 43200, ledger)),
+             meck:unload(blockchain_ledger_v1)
+     end}.
 
 -endif.

@@ -323,13 +323,26 @@ init(Args) ->
     lager:info("~p init with ~p", [?SERVER, Args]),
     Swarm = blockchain_swarm:swarm(),
     SwarmTID = blockchain_swarm:tid(),
-    Ports = case application:get_env(blockchain, ports, undefined) of
-                undefined ->
-                    %% fallback to the single 'port' app env var
-                    [proplists:get_value(port, Args, 0)];
-                PortList when is_list(PortList) ->
-                    PortList
-            end,
+    %% Get list of listening addresses. If deprecated 'ports' or 'port' variable used,
+    %% assume listening IP of 0.0.0.0. otherwise use listen_addresses parameter.
+    ListenAddrs = case application:get_env(blockchain, ports, undefined) of
+                      undefined -> 
+                          case application:get_env(blockchain, port, undefined) of
+                              undefined ->
+                                  case application:get_env(blockchain, listen_addresses, undefined) of
+                                      undefined -> ["/ip4/0.0.0.0/tcp/0"];
+                                      AddrList when is_list(erlang:hd(AddrList)) -> AddrList;
+                                      AddrList when is_list(AddrList) -> [ AddrList ]
+                                  end;
+                              Port ->
+                                  lager:warning("Using deprecated port configuration parameter. Switch to {listen_addresses, ~p}", [["/ip4/0.0.0.0/tcp/" ++ integer_to_list(Port)]]),
+                                  ["/ip4/0.0.0.0/tcp/" ++ integer_to_list(Port)]
+                          end;
+                      PortList when is_list(PortList) ->
+                          lager:warning("Using deprecated ports configuration parameter. Swtich to {listen_addresses, ~p}",
+                                        ["/ip4/0.0.0.0/tcp/" ++ integer_to_list(Port) || Port <- PortList]),
+                          ["/ip4/0.0.0.0/tcp/" ++ integer_to_list(Port) || Port <- PortList]
+                  end,
     {Blockchain, Ref} =
         case application:get_env(blockchain, autoload, true) of
             false ->
@@ -341,7 +354,7 @@ init(Args) ->
                 load_chain(SwarmTID, BaseDir, GenDir)
         end,
     true = lists:all(fun(E) -> E == ok end,
-                     [ libp2p_swarm:listen(SwarmTID, "/ip4/0.0.0.0/tcp/" ++ integer_to_list(Port)) || Port <- Ports ]),
+                     [ libp2p_swarm:listen(SwarmTID, Addr) || Addr <- ListenAddrs ]),
     {Mode, Info} = get_sync_mode(Blockchain),
 
     {ok, #state{swarm = Swarm, swarm_tid = SwarmTID, blockchain = Blockchain,
@@ -586,24 +599,29 @@ handle_info({'DOWN', SyncRef, process, _SyncPid, Reason},
     %% we're done with our sync.  determine if we're very far behind,
     %% and should resync immediately, or if we're relatively close to
     %% the present and can afford to retry later.
-    {ok, Block} = blockchain:head_block(Chain),
-    Now = erlang:system_time(seconds),
-    Time = blockchain_block:time(Block),
-    case Now - Time of
-        N when N < 0 ->
-            %% if blocktimes are in the future, we're confused about
-            %% the time, proceed as if we're synced.
-            {noreply, schedule_sync(State)};
-        N when N < 30 * 60 andalso Reason == normal ->
-            %% relatively recent
-            {noreply, schedule_sync(State)};
-        _ when Mode == snapshot ->
-            lager:info("snapshot sync down reason ~p", [Reason]),
-            {Hash, Height} = State#state.snapshot_info,
-            {noreply, snapshot_sync(Hash, Height, State)};
-        _ ->
-            case Reason of dial -> ok; _ -> lager:info("block sync down: ~p", [Reason]) end,
-            %% we're deep in the past here, or the last one errored out, so just start the next sync
+    case blockchain:head_block(Chain) of
+        {ok, Block} ->
+            Now = erlang:system_time(seconds),
+            Time = blockchain_block:time(Block),
+            case Now - Time of
+                N when N < 0 ->
+                    %% if blocktimes are in the future, we're confused about
+                    %% the time, proceed as if we're synced.
+                    {noreply, schedule_sync(State)};
+                N when N < 30 * 60 andalso Reason == normal ->
+                    %% relatively recent
+                    {noreply, schedule_sync(State)};
+                _ when Mode == snapshot ->
+                    lager:info("snapshot sync down reason ~p", [Reason]),
+                    {Hash, Height} = State#state.snapshot_info,
+                    {noreply, snapshot_sync(Hash, Height, State)};
+                _ ->
+                    case Reason of dial -> ok; _ -> lager:info("block sync down: ~p", [Reason]) end,
+                    %% we're deep in the past here, or the last one errored out, so just start the next sync
+                    {noreply, start_sync(State)}
+            end;
+        {error, not_found} ->
+            lager:warning("cannot get head block"),
             {noreply, start_sync(State)}
     end;
 handle_info({'DOWN', GossipRef, process, _GossipPid, _Reason},

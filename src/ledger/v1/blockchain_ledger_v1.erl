@@ -5,7 +5,7 @@
 -module(blockchain_ledger_v1).
 
 -export([
-    new/1, new/4, new/5,
+    new/1, new/4, new/5, new/6,
     new_aux/1,
     bootstrap_aux/2,
     mode/1, mode/2,
@@ -90,6 +90,12 @@
     debit_fee/3, debit_fee/4, debit_fee/6,
     check_dc_balance/3,
     check_dc_or_hnt_balance/4,
+
+    hnt_burned/1,
+    add_hnt_burned/2,
+    clear_hnt_burned/1,
+
+    net_overage/1,  net_overage/2,
 
     token_burn_exchange_rate/1,
     token_burn_exchange_rate/2,
@@ -319,6 +325,8 @@
 -define(MULTI_KEYS, <<"multi_keys">>).
 -define(VARS_NONCE, <<"vars_nonce">>).
 -define(BURN_RATE, <<"token_burn_exchange_rate">>).
+-define(HNT_BURNED, <<"hnt_burned">>).
+-define(NET_OVERAGE, <<"net_overage">>).
 -define(CURRENT_ORACLE_PRICE, <<"current_oracle_price">>). %% stores the current calculated price
 -define(ORACLE_PRICES, <<"oracle_prices">>). %% stores a rolling window of prices
 -define(hex_list, <<"$hex_list">>).
@@ -356,11 +364,17 @@ new(Dir) ->
 
 -spec new(file:filename_all(), rocksdb:db_handle(), rocksdb:cf_handle(), rocksdb:cf_handle()) -> ledger().
 new(Dir, BlocksDB, BlocksCF, HeightsCF) ->
-    new(Dir, false, BlocksDB, BlocksCF, HeightsCF).
+    GlobalOpts = application:get_env(rocksdb, global_opts, []),
+    new(Dir, false, BlocksDB, BlocksCF, HeightsCF, GlobalOpts).
 
 -spec new(file:filename_all(), boolean(), rocksdb:db_handle(), rocksdb:cf_handle(), rocksdb:cf_handle()) -> ledger().
 new(Dir, ReadOnly, BlocksDB, BlocksCF, HeightsCF) ->
-    L = new(Dir, ReadOnly),
+    GlobalOpts = application:get_env(rocksdb, global_opts, []),
+    new(Dir, ReadOnly, BlocksDB, BlocksCF, HeightsCF, GlobalOpts).
+
+-spec new(file:filename_all(), boolean(), rocksdb:db_handle(), rocksdb:cf_handle(), rocksdb:cf_handle(), rocksdb:cf_options()) -> ledger().
+new(Dir, ReadOnly, BlocksDB, BlocksCF, HeightsCF, Options) ->
+    L = new(Dir, ReadOnly, Options),
 
     %% allow config-set commit hooks in case we're worried about something being racy
     Hooks =
@@ -376,8 +390,8 @@ new(Dir, ReadOnly, BlocksDB, BlocksCF, HeightsCF) ->
     sweep_old_checkpoints(Ledger),
     Ledger.
 
-new(Dir, ReadOnly) ->
-    {ok, DB, CFs} = open_db(active, Dir, true, ReadOnly),
+new(Dir, ReadOnly, Options) ->
+    {ok, DB, CFs} = open_db(active, Dir, true, ReadOnly, Options),
 
     [DefaultCF, AGwsCF, EntriesCF, DCEntriesCF, HTLCsCF, PoCsCF, SecuritiesCF, RoutingCF,
      SubnetsCF, SCsCF, H3DexCF, GwDenormCF, ValidatorsCF,
@@ -476,7 +490,8 @@ new_aux(Ledger) ->
     end.
 
 new_aux(Path, Ledger) ->
-    {ok, DB, CFs} = open_db(aux, Path, false, false),
+    GlobalOpts = application:get_env(rocksdb, global_opts, []),
+    {ok, DB, CFs} = open_db(aux, Path, false, false, GlobalOpts),
     [DefaultCF, AGwsCF, EntriesCF, DCEntriesCF, HTLCsCF, PoCsCF, SecuritiesCF, RoutingCF,
      SubnetsCF, SCsCF, H3DexCF, GwDenormCF, ValidatorsCF, AuxHeightsCF] = CFs,
     Ledger#ledger_v1{aux=#aux_ledger_v1{
@@ -579,7 +594,7 @@ new_context(Ledger) ->
 new_direct_context(Ledger) ->
     GwCache = ets:new(gw_cache, [set, protected, {keypos, 1}]),
     context_cache(direct, GwCache, Ledger).
-   
+
 
 get_context(Ledger) ->
     case ?MODULE:context_cache(Ledger) of
@@ -598,11 +613,11 @@ delete_context(Ledger) ->
         {undefined, undefined} ->
             Ledger;
         {direct, GwCache} ->
-            ets:delete(GwCache),
+            catch ets:delete(GwCache),
             context_cache(undefined, undefined, Ledger);
         {Cache, GwCache} ->
-            ets:delete(Cache),
-            ets:delete(GwCache),
+            catch ets:delete(Cache),
+            catch ets:delete(GwCache),
             context_cache(undefined, undefined, Ledger)
     end.
 
@@ -785,7 +800,7 @@ context_snapshot(#ledger_v1{db=DB, snapshots=Cache, mode=Mode} = Ledger) ->
                                             ok
                                     end,
                                     %% open the checkpoint read-write and commit the changes in the ETS table into it
-                                    Ledger2 = new(filename:dirname(TmpDir), false),
+                                    Ledger2 = new(filename:dirname(TmpDir), false, []),
                                     Ledger3 = blockchain_ledger_v1:mode(Mode, Ledger2),
                                     #sub_ledger_v1{cache=ECache, gateway_cache=GwCache} = subledger(Ledger),
                                     lager:info("dumping ~p elements to checkpoint in ~p mode", [length(ets:tab2list(ECache)), Mode]),
@@ -865,7 +880,7 @@ has_snapshot(Height, #ledger_v1{snapshots=Cache} = Ledger, Retries) ->
                             try
                                 lager:info("loading checkpoint from disk with ledger mode ~p", [Mode]),
                                 %% new/2 wants to add on the ledger.db part itself
-                                NewLedger = new(filename:dirname(CheckpointDir), true),
+                                NewLedger = new(filename:dirname(CheckpointDir), true, []),
                                 %% share the snapshot cache with the new ledger
                                 NewLedger2 = blockchain_ledger_v1:mode(Mode,
                                                                        NewLedger#ledger_v1{
@@ -2767,6 +2782,7 @@ debit_fee(Address, Fee, Ledger, MaybeTryImplicitBurn, TxnHash, Chain) ->
     case ?MODULE:find_dc_entry(Address, Ledger) of
         {error, dc_entry_not_found} when MaybeTryImplicitBurn == true ->
             {ok, FeeInHNT} = ?MODULE:dc_to_hnt(Fee, Ledger),
+            ok = add_hnt_burned(FeeInHNT, Ledger),
             ?MODULE:debit_fee_from_account(Address, FeeInHNT, Ledger, TxnHash, Chain);
         {error, _}=Error ->
             Error;
@@ -2784,6 +2800,7 @@ debit_fee(Address, Fee, Ledger, MaybeTryImplicitBurn, TxnHash, Chain) ->
                 {false, true} ->
                     %% user does not have sufficient DC balance, try to do an implicit hnt burn instead
                     {ok, FeeInHNT} = ?MODULE:dc_to_hnt(Fee, Ledger),
+                    ok = add_hnt_burned(FeeInHNT, Ledger),
                     ?MODULE:debit_fee_from_account(Address, FeeInHNT, Ledger, TxnHash, Chain);
                 {false, false} ->
                     {error, {insufficient_dc_balance, {Fee, Balance}}}
@@ -2840,6 +2857,67 @@ check_dc_or_hnt_balance(Address, Amount, Ledger, IsFeesEnabled) ->
                             Res
                     end
             end
+    end.
+
+-spec hnt_burned(ledger()) -> {ok, non_neg_integer()} | {error, any()}.
+hnt_burned(Ledger) ->
+    case blockchain:config(?net_emissions_enabled, Ledger) of
+        {ok, true} ->
+            DefaultCF = default_cf(Ledger),
+            case cache_get(Ledger, DefaultCF, ?HNT_BURNED, []) of
+                {ok, <<Burned:64/integer-unsigned-native>>} ->
+                    {ok, Burned};
+                not_found ->
+                    {ok, 0};
+                Error ->
+                    Error
+            end;
+        _ -> {ok, 0}
+    end.
+
+-spec add_hnt_burned(non_neg_integer(), ledger()) -> ok.
+add_hnt_burned(Burned, Ledger) ->
+    case blockchain:config(?net_emissions_enabled, Ledger) of
+        {ok, true} ->
+            DefaultCF = default_cf(Ledger),
+            Prev =
+                case cache_get(Ledger, DefaultCF, ?HNT_BURNED, []) of
+                    {ok, <<P:64/integer-unsigned-native>>} -> P;
+                    not_found -> 0
+                end,
+            New = Prev + Burned,
+            cache_put(Ledger, DefaultCF, ?HNT_BURNED, <<New:64/integer-unsigned-native>>);
+        _ -> ok
+    end.
+
+-spec clear_hnt_burned(ledger()) -> ok.
+clear_hnt_burned(Ledger) ->
+    DefaultCF = default_cf(Ledger),
+    cache_put(Ledger, DefaultCF, ?HNT_BURNED, <<0:64/integer-unsigned-native>>).
+
+-spec net_overage(ledger()) -> {ok, non_neg_integer()} | {error, any()}.
+net_overage(Ledger) ->
+    case blockchain:config(?net_emissions_enabled, Ledger) of
+        {ok, true} ->
+            DefaultCF = default_cf(Ledger),
+            case cache_get(Ledger, DefaultCF, ?NET_OVERAGE, []) of
+                {ok, <<Overage:64/integer-unsigned-native>>} ->
+                    {ok, Overage};
+                not_found ->
+                    {ok, 0};
+                Error ->
+                    Error
+            end;
+        _ -> {ok, 0}
+    end.
+
+-spec net_overage(non_neg_integer(), ledger()) -> ok.
+net_overage(Overage, Ledger) ->
+    case blockchain:config(?net_emissions_enabled, Ledger) of
+        {ok, true} ->
+            DefaultCF = default_cf(Ledger),
+            cache_put(Ledger, DefaultCF, ?NET_OVERAGE, <<Overage:64/integer-unsigned-native>>);
+        _ -> ok
     end.
 
 -spec token_burn_exchange_rate(ledger()) -> {ok, integer()} | {error, any()}.
@@ -3471,7 +3549,10 @@ clean(#ledger_v1{dir=Dir, db=DB}=L) ->
     catch ok = rocksdb:close(DB),
     rocksdb:destroy(DBDir, []),
     clean_checkpoints(L),
-    clean_aux(L).
+    clean_aux(L);
+clean(Dir) ->
+    DBDir = filename:join(Dir, ?DB_FILE),
+    rocksdb:destroy(DBDir, []).
 
 clean_aux(L) ->
     case has_aux(L) of
@@ -3676,10 +3757,11 @@ set_aux_rewards(Height, Rewards, AuxRewards, Ledger) ->
 ) -> map().
 diff_aux_rewards_for(Key, Ledger) ->
     Diff = diff_aux_rewards(Ledger),
-    maps:map(
-        fun(_Height, Res) ->
-            maps:get(Key, Res, undefined)
+    maps:fold(
+        fun(Height, Res, Acc) ->
+            maps:put(Height, maps:get(Key, Res, undefined), Acc)
         end,
+        #{},
         Diff
     ).
 
@@ -3814,7 +3896,7 @@ validators_cf(Ledger) ->
 cache_put(Ledger, {Name, _DB, _CF}, Key, Value) ->
     case context_cache(Ledger) of
         {direct, _GwCache} ->
-            rocksdb:put(Ledger#ledger_v1.db, _CF, Key, Value, []);
+            rocksdb:put(db(Ledger), _CF, Key, Value, [{disable_wal, true}, {sync, false}]);
         {Cache, _GwCache} ->
             true = ets:insert(Cache, {{Name, Key}, Value})
     end,
@@ -3845,7 +3927,7 @@ cache_delete(Ledger, {Name, _DB, _CF}, Key) ->
     %% we never delete gateways now
     case context_cache(Ledger) of
         {direct, _GWCache} ->
-            rocksdb:delete(Ledger#ledger_v1.db, _CF, Key, []);
+            rocksdb:delete(db(Ledger), _CF, Key, []);
         {Cache, _GwCache} ->
             true = ets:insert(Cache, {{Name, Key}, ?CACHE_TOMBSTONE})
     end,
@@ -3952,26 +4034,22 @@ process_fun(ToProcess, Cache, CF,
 
 -spec open_db(Mode :: mode(),
               Dir :: file:filename_all(),
-              HasDelayed :: boolean(), ReadOnly :: boolean()) -> {ok, rocksdb:db_handle(), [rocksdb:cf_handle()]} | {error, any()}.
-open_db(active, Dir, true, ReadOnly) ->
+              HasDelayed :: boolean(), ReadOnly :: boolean(), Options :: rocksdb:cf_options()) -> {ok, rocksdb:db_handle(), [rocksdb:cf_handle()]} | {error, any()}.
+open_db(active, Dir, true, ReadOnly, Options) ->
     DBDir = filename:join(Dir, ?DB_FILE),
     ok = filelib:ensure_dir(DBDir),
-    GlobalOpts = application:get_env(rocksdb, global_opts, []),
-    DBOptions = [{create_if_missing, true}, {atomic_flush, true}] ++ GlobalOpts,
-    CFOpts = GlobalOpts,
+    DBOptions = lists:keymerge(1, lists:ukeysort(1, Options), lists:ukeysort(1, [{create_if_missing, true}, {atomic_flush, true}])),
     DefaultCFs = default_cfs() ++ delayed_cfs(),
-    open_db_(DBDir, DBOptions, DefaultCFs, CFOpts, ReadOnly, false);
-open_db(aux, Dir, false, ReadOnly) ->
+    open_db_(DBDir, DBOptions, DefaultCFs, Options, ReadOnly, false);
+open_db(aux, Dir, false, ReadOnly, Options) ->
     DBDir = filename:join(Dir, ?DB_FILE),
     ok = filelib:ensure_dir(DBDir),
-    GlobalOpts = application:get_env(rocksdb, global_opts, []),
-    DBOptions = [{create_if_missing, true}, {atomic_flush, true}] ++ GlobalOpts,
-    CFOpts = GlobalOpts,
+    DBOptions = lists:keymerge(1, lists:ukeysort(1, Options), lists:ukeysort(1, [{create_if_missing, true}, {atomic_flush, true}])),
     DefaultCFs = default_cfs() ++ aux_cfs(),
-    open_db_(DBDir, DBOptions, DefaultCFs, CFOpts, ReadOnly, false);
-open_db(active, _Dir, false, _) ->
+    open_db_(DBDir, DBOptions, DefaultCFs, Options, ReadOnly, false);
+open_db(active, _Dir, false, _, _) ->
     {error, not_opening_active_without_delayed};
-open_db(aux, _Dir, true, _) ->
+open_db(aux, _Dir, true, _, _) ->
     {error, not_opening_aux_with_delayed}.
 
 open_db_(DBDir, DBOptions, DefaultCFs, CFOpts, ReadOnly, Retry) ->
@@ -4811,8 +4889,23 @@ snapshot_raw(CF, L) ->
     lists:reverse(cache_fold(L, CF, fun({_, _}=KV, KVs) -> [KV | KVs] end, [])).
 
 -spec load_raw([{binary(), binary()}], rocksdb:cf_handle(), ledger()) -> ok.
-load_raw(KVL, CF, Ledger) ->
-    lists:foreach(fun({K, V}) -> cache_put(Ledger, CF, K, V) end, KVL).
+load_raw(KVL, {_Name, DB, CF}, _Ledger) ->
+    %% you can probably make this much larger on larger machines
+    BatchSize = application:get_env(blockchain, snapshot_load_batch_size, 100),
+    {ok, Batch0} = rocksdb:batch(),
+    FinalBatch = lists:foldl(fun({K, V}, Batch) ->
+                        rocksdb:batch_put(Batch, CF, K, V),
+                        case rocksdb:batch_count(Batch) > BatchSize of
+                            true ->
+                                rocksdb:write_batch(DB, Batch, []),
+                                {ok, NewBatch} = rocksdb:batch(),
+                                NewBatch;
+                            false ->
+                                Batch
+                        end
+                end, Batch0, KVL),
+    rocksdb:write_batch(DB, FinalBatch, []),
+    ok.
 
 -spec snapshot_raw_pocs(ledger()) -> [{binary(), binary()}].
 snapshot_raw_pocs(Ledger) ->
@@ -5025,7 +5118,25 @@ snapshot_h3dex(Ledger) ->
 
 -spec load_h3dex([{binary(), binary()}], ledger()) -> ok.
 load_h3dex(H3DexList, Ledger) ->
-    set_h3dex(maps:from_list(H3DexList), Ledger).
+    {_Name, DB, H3CF} = h3dex_cf(Ledger),
+    {ok, Batch0} = rocksdb:batch(),
+    BatchSize = application:get_env(blockchain, snapshot_load_batch_size, 100),
+    FinalBatch = lists:foldl(fun({Loc, Gateways}, Batch) ->
+                         BinLoc = h3_to_key(Loc),
+                         BinGWs = term_to_binary(lists:sort(Gateways), [compressed]),
+                         rocksdb:batch_put(Batch, H3CF, BinLoc, BinGWs),
+                         case rocksdb:batch_count(Batch) > BatchSize of
+                             true ->
+                                 rocksdb:write_batch(DB, Batch, []),
+                                 {ok, NewBatch} = rocksdb:batch(),
+                                 NewBatch;
+                             false ->
+                                 Batch
+                         end
+                 end, Batch0, H3DexList),
+
+    rocksdb:write_batch(DB, FinalBatch, []),
+    ok.
 
 -spec get_sc_mod( Entry :: blockchain_ledger_state_channel_v1:state_channel() |
                            blockchain_ledger_state_channel_v2:state_channel_v2(),
@@ -5500,37 +5611,40 @@ state_channels_test() ->
     ok.
 
 state_channels_v2_test() ->
-    BaseDir = test_utils:tmp_dir("state_channels_v2_test"),
-    Ledger = ?MODULE:new(BaseDir),
-    Ledger1 = ?MODULE:new_context(Ledger),
-    ID = crypto:strong_rand_bytes(32),
-    Owner = <<"owner">>,
-    Nonce = 1,
+    {timeout, 30000,
+     fun() ->
+             BaseDir = test_utils:tmp_dir("state_channels_v2_test"),
+             Ledger = ?MODULE:new(BaseDir),
+             Ledger1 = ?MODULE:new_context(Ledger),
+             ID = crypto:strong_rand_bytes(32),
+             Owner = <<"owner">>,
+             Nonce = 1,
 
-    ?assertEqual({error, not_found}, ?MODULE:find_state_channel(ID, Owner, Ledger1)),
-    ?assertEqual({ok, []}, ?MODULE:find_sc_ids_by_owner(Owner, Ledger1)),
+             ?assertEqual({error, not_found}, ?MODULE:find_state_channel(ID, Owner, Ledger1)),
+             ?assertEqual({ok, []}, ?MODULE:find_sc_ids_by_owner(Owner, Ledger1)),
 
-    meck:new(blockchain, [passthrough]),
-    meck:expect(blockchain, config, fun(?sc_version, _) -> {ok, 2} end),
+             meck:new(blockchain, [passthrough]),
+             meck:expect(blockchain, config, fun(?sc_version, _) -> {ok, 2} end),
 
-    Ledger2 = ?MODULE:new_context(Ledger),
-    ok = ?MODULE:add_state_channel(ID, Owner, 10, Nonce, 0, 0, Ledger2),
-    ok = ?MODULE:commit_context(Ledger2),
-    {ok, SC} = ?MODULE:find_state_channel(ID, Owner, Ledger),
-    ?assertEqual(ID, blockchain_ledger_state_channel_v2:id(SC)),
-    ?assertEqual(Owner, blockchain_ledger_state_channel_v2:owner(SC)),
-    ?assertEqual(Nonce, blockchain_ledger_state_channel_v2:nonce(SC)),
-    ?assertEqual({ok, [ID]}, ?MODULE:find_sc_ids_by_owner(Owner, Ledger)),
+             Ledger2 = ?MODULE:new_context(Ledger),
+             ok = ?MODULE:add_state_channel(ID, Owner, 10, Nonce, 0, 0, Ledger2),
+             ok = ?MODULE:commit_context(Ledger2),
+             {ok, SC} = ?MODULE:find_state_channel(ID, Owner, Ledger),
+             ?assertEqual(ID, blockchain_ledger_state_channel_v2:id(SC)),
+             ?assertEqual(Owner, blockchain_ledger_state_channel_v2:owner(SC)),
+             ?assertEqual(Nonce, blockchain_ledger_state_channel_v2:nonce(SC)),
+             ?assertEqual({ok, [ID]}, ?MODULE:find_sc_ids_by_owner(Owner, Ledger)),
 
-    Ledger3 = ?MODULE:new_context(Ledger),
-    ok = ?MODULE:close_state_channel(Owner, Owner, SC, ID, false, Ledger3),
-    ok = ?MODULE:commit_context(Ledger3),
-    ?assertEqual({error, not_found}, ?MODULE:find_state_channel(ID, Owner, Ledger)),
-    ?assertEqual({ok, []}, ?MODULE:find_sc_ids_by_owner(Owner, Ledger)),
-    test_utils:cleanup_tmp_dir(BaseDir),
-    ?assert(meck:validate(blockchain)),
-    meck:unload(blockchain),
-    ok.
+             Ledger3 = ?MODULE:new_context(Ledger),
+             ok = ?MODULE:close_state_channel(Owner, Owner, SC, ID, false, Ledger3),
+             ok = ?MODULE:commit_context(Ledger3),
+             ?assertEqual({error, not_found}, ?MODULE:find_state_channel(ID, Owner, Ledger)),
+             ?assertEqual({ok, []}, ?MODULE:find_sc_ids_by_owner(Owner, Ledger)),
+             test_utils:cleanup_tmp_dir(BaseDir),
+             ?assert(meck:validate(blockchain)),
+             meck:unload(blockchain),
+             ok
+     end}.
 
 increment_bin_test() ->
     ?assertEqual(<<2>>, increment_bin(<<1>>)),

@@ -1,3 +1,4 @@
+
 %%%-------------------------------------------------------------------
 %% @doc
 %% == Blockchain ==
@@ -15,7 +16,9 @@
     ledger/0, ledger/1, ledger/2, ledger_at/2, ledger_at/3,
     dir/1,
 
-    blocks/1, get_block/2, get_block_hash/2, get_raw_block/2, save_block/2,
+    blocks/1,
+    get_block/2, get_block_hash/2, get_block_height/2, get_raw_block/2,
+    save_block/2,
     has_block/2,
     find_first_block_after/2,
 
@@ -638,6 +641,26 @@ get_block_hash(Height, #blockchain{db=DB, heights=HeightsCF}) ->
             Error
     end.
 
+-spec get_block_height(Hash :: blockchain_block:hash(), Blockchain :: blockchain()) -> {ok, non_neg_integer()} | {error, any()}.
+get_block_height(Hash, #blockchain{db=DB, heights=HeightsCF, blocks=BlocksCF}) ->
+    case rocksdb:get(DB, HeightsCF, Hash, []) of
+       {ok, <<Height:64/integer-unsigned-big>>} ->
+            {ok, Height};
+        not_found ->
+            case rocksdb:get(DB, BlocksCF, Hash, []) of
+                {ok, BinBlock} ->
+                    Height = blockchain_block:height(blockchain_block:deserialize(BinBlock)),
+                    ok = rocksdb:put(DB, HeightsCF, Hash, <<Height:64/integer-unsigned-big>>, []),
+                    {ok, Height};
+                not_found ->
+                    {error, not_found};
+                Error ->
+                    Error
+            end;
+        Error ->
+            Error
+    end.
+
 %% @doc read blocks from the db without deserializing them
 -spec get_raw_block(blockchain_block:hash() | integer(), blockchain()) -> {ok, binary()} | not_found | {error, any()}.
 get_raw_block(Hash, #blockchain{db=DB, blocks=BlocksCF}) when is_binary(Hash) ->
@@ -1132,14 +1155,16 @@ delete_block(Block, #blockchain{db=DB, default=DefaultCF,
                                 blocks=BlocksCF, heights=HeightsCF}=Chain) ->
     {ok, Batch} = rocksdb:batch(),
     Hash = blockchain_block:hash_block(Block),
-    PrevHash = blockchain_block:prev_hash(Block),
     Height = blockchain_block:height(Block),
-    lager:warning("deleting block ~p height: ~p, Prev Hash ~p", [Hash, Height, PrevHash]),
     ok = rocksdb:batch_delete(Batch, BlocksCF, Hash),
     {ok, HeadHash} = ?MODULE:head_hash(Chain),
     case HeadHash =:= Hash of
-        false -> ok;
+        false ->
+            lager:warning("deleting non-head block ~p height: ~p", [Hash, Height]),
+            ok;
         true ->
+            PrevHash = blockchain_block:prev_hash(Block),
+            lager:warning("deleting head block ~p height: ~p, new head is ~p", [Hash, Height, PrevHash]),
             ok = rocksdb:batch_put(Batch, DefaultCF, ?HEAD, PrevHash)
     end,
     ok = rocksdb:batch_delete(Batch, HeightsCF, <<Height:64/integer-unsigned-big>>),
@@ -1662,7 +1687,7 @@ missing_block(#blockchain{db=DB, default=DefaultCF}) ->
 
 -spec add_snapshot(blockchain_ledger_snapshot:snapshot(), blockchain()) ->
                           ok | {error, any()}.
-add_snapshot(Snapshot, #blockchain{db=DB, snapshots=SnapshotsCF}) ->
+add_snapshot(Snapshot, #blockchain{db=DB, snapshots=SnapshotsCF}=Chain) ->
     try
         Height = blockchain_ledger_snapshot_v1:height(Snapshot),
         Hash = blockchain_ledger_snapshot_v1:hash(Snapshot),
@@ -1674,13 +1699,9 @@ add_snapshot(Snapshot, #blockchain{db=DB, snapshots=SnapshotsCF}) ->
         %% lexiographic ordering works better with big endian
         ok = rocksdb:batch_put(Batch0, SnapshotsCF, <<Height:64/integer-unsigned-big>>, Hash),
         ok = rocksdb:write_batch(DB, Batch0, []),
-
-        {ok, Batch} = rocksdb:batch(),
         BinSnap = blockchain_ledger_snapshot_v1:serialize(Snapshot),
-        ok = rocksdb:batch_put(Batch, SnapshotsCF, Hash, BinSnap),
-        %% lexiographic ordering works better with big endian
-        ok = rocksdb:batch_put(Batch, SnapshotsCF, <<Height:64/integer-unsigned-big>>, Hash),
-        ok = rocksdb:write_batch(DB, Batch, [])
+        add_bin_snapshot(BinSnap, Height, Hash, Chain)
+
     catch What:Why:Stack ->
             lager:warning("error adding snapshot: ~p:~p, ~p", [What, Why, Stack]),
             {error, Why}
@@ -1690,10 +1711,15 @@ add_snapshot(Snapshot, #blockchain{db=DB, snapshots=SnapshotsCF}) ->
                        none | binary(), blockchain()) ->
                               ok | {error, any()}.
 add_bin_snapshot(_BinSnap, _Height, none, _Chain) -> {error, no_snapshot_hash};
-add_bin_snapshot(BinSnap, Height, Hash, #blockchain{db=DB, snapshots=SnapshotsCF}) when is_binary(Hash) ->
+add_bin_snapshot(BinSnap, Height, Hash, #blockchain{db=DB, dir=Dir, snapshots=SnapshotsCF}) when is_binary(Hash) ->
     try
+        SnapDir = filename:join(Dir, "saved-snaps"),
+        SnapFile = list_to_binary(io_lib:format("snap-~s", [blockchain_utils:bin_to_hex(Hash)])),
+        ok = filelib:ensure_dir(filename:join(SnapDir, SnapFile)),
+        ok = file:write_file(filename:join(SnapDir, SnapFile), BinSnap),
         {ok, Batch} = rocksdb:batch(),
-        ok = rocksdb:batch_put(Batch, SnapshotsCF, Hash, BinSnap),
+        %% store the snap as a filename
+        ok = rocksdb:batch_put(Batch, SnapshotsCF, Hash, <<"file:", SnapFile/binary>>),
         %% lexiographic ordering works better with big endian
         ok = rocksdb:batch_put(Batch, SnapshotsCF, <<Height:64/integer-unsigned-big>>, Hash),
         ok = rocksdb:write_batch(DB, Batch, [])
@@ -1705,10 +1731,14 @@ add_bin_snapshot(BinSnap, Height, Hash, #blockchain{db=DB, snapshots=SnapshotsCF
 
 -spec get_snapshot(blockchain_block:hash() | integer(), blockchain()) ->
                           {ok, binary()} | {error, any()}.
-get_snapshot(<<Hash/binary>>, #blockchain{db=DB, snapshots=SnapshotsCF}) ->
+get_snapshot(<<Hash/binary>>, #blockchain{db=DB, dir=Dir, snapshots=SnapshotsCF}) ->
     case rocksdb:get(DB, SnapshotsCF, Hash, []) of
         {ok, <<"__sentinel__">>} ->
             {error, sentinel};
+        {ok, <<"file:", SnapFile/binary>>} ->
+            SnapDir = filename:join(Dir, "saved-snaps"),
+            %% this returns the same result as this function spec
+            file:read_file(filename:join(SnapDir, SnapFile));
         {ok, Snap} ->
             {ok, Snap};
         not_found ->
@@ -1781,7 +1811,7 @@ get_implicit_burn(TxnHash, #blockchain{db=DB, implicit_burns=ImplicitBurnsCF}) w
 add_implicit_burn(TxnHash, ImplicitBurn, #blockchain{db=DB, implicit_burns=ImplicitBurnsCF}) ->
     try
         BinImp = blockchain_implicit_burn:serialize(ImplicitBurn),
-        ok = rocksdb:put(DB, ImplicitBurnsCF, TxnHash, BinImp, [{sync, true}])
+        ok = rocksdb:put(DB, ImplicitBurnsCF, TxnHash, BinImp, [])
     catch What:Why:Stack ->
             lager:warning("error adding implicit burn: ~p:~p, ~p", [What, Why, Stack]),
             {error, Why}
@@ -2003,6 +2033,18 @@ assert_loc_txn(H3String, OwnerB58, PayerB58, Nonce) ->
 open_db(Dir) ->
     DBDir = filename:join(Dir, ?DB_FILE),
     ok = filelib:ensure_dir(DBDir),
+
+    case filelib:is_file(filename:join(Dir, "blockchain-open-failed")) andalso follow_mode() of
+        true ->
+            lager:warning("unopenable blockchain.db detected, removing"),
+            ok = file:delete(filename:join(Dir, "blockchain-open-failed")),
+            clean(Dir),
+            blockchain_ledger_v1:clean(Dir);
+        false ->
+            ok
+    end,
+
+
     GlobalOpts = application:get_env(rocksdb, global_opts, []),
     DBOptions = [{create_if_missing, true}, {atomic_flush, true}] ++ GlobalOpts,
     DefaultCFs = ["default", "blocks", "heights", "temp_blocks", "plausible_blocks", "snapshots", "implicit_burns"],
@@ -2015,10 +2057,14 @@ open_db(Dir) ->
         end,
 
     CFOpts = GlobalOpts,
+
+    ok = file:write_file(filename:join(Dir, "blockchain-open-failed"), <<>>),
     case rocksdb:open_with_cf(DBDir, DBOptions,  [adjust_cfopts({CF, CFOpts}) || CF <- ExistingCFs]) of
         {error, _Reason}=Error ->
+            ok = file:delete(filename:join(Dir, "blockchain-open-failed")),
             Error;
         {ok, DB, OpenedCFs} ->
+            ok = file:delete(filename:join(Dir, "blockchain-open-failed")),
             L1 = lists:zip(ExistingCFs, OpenedCFs),
             L2 = lists:map(
                 fun(CF) ->
@@ -2056,6 +2102,7 @@ save_block(Block, Batch, #blockchain{default=DefaultCF, blocks=BlocksCF, heights
     ok = rocksdb:batch_put(Batch, DefaultCF, ?HEAD, Hash),
     ok = rocksdb:batch_put(Batch, DefaultCF, ?LAST_BLOCK_ADD_TIME, <<(erlang:system_time(second)):64/integer-unsigned-little>>),
     %% lexiographic ordering works better with big endian
+    ok = rocksdb:batch_put(Batch, HeightsCF, Hash, <<Height:64/integer-unsigned-big>>),
     ok = rocksdb:batch_put(Batch, HeightsCF, <<Height:64/integer-unsigned-big>>, Hash).
 
 save_temp_block(Block, #blockchain{db=DB, temp_blocks=TempBlocks, default=DefaultCF}=Chain) ->
