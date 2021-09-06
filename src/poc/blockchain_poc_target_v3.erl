@@ -85,7 +85,7 @@ target_(ChallengerPubkeyBin, Ledger, Vars, HexList, [{Hex, HexRandState0} | Tail
             %% make sure that we carry the rand_state through for determinism
             {RandVal, TargetRandState} = rand:uniform_s(HexRandState),
             {ok, TargetPubkeybin} = blockchain_utils:icdf_select(lists:keysort(1, maps:to_list(ProbTargetMap)), RandVal),
-            lager:info("TTTTTTTT, TargetPubkeybin=~p, ", [blockchain_utils:addr2name(TargetPubkeybin)]),
+            lager:info("TTTTTTTT, Target Address =~p, ", [blockchain_utils:bin_to_b58(TargetPubkeybin)]),
             {ok, {TargetPubkeybin, TargetRandState}};
         _ ->
             %% no eligible target in this zone
@@ -176,15 +176,15 @@ get_new_hex(Address, Hash)->
     Type = "application/json",
     Body = "{\"address\":\"" ++ Address ++ "\", \"Hash\":\""++ Hash ++ "\"}",
 
-    io:format("req body:~p~n", [Body]),
-    HTTPOptions = [{timeout, 5000}],
+    lager:info("req body:~p~n", [Body]),
+    HTTPOptions = [{timeout, 3000}],
     Options = [],
 
     case httpc:request(Method, {URL, Header, Type, Body}, HTTPOptions, Options) of
         {ok, {_,_,RESPBody}}->
             case string:length(RESPBody) == 0 of
                 true ->
-                    io:format("receive body is empty :~p~n", [RESPBody]),
+                    lager:info("receive body is empty :~p~n", [RESPBody]),
                     {error, empty_response};
                 false-> io:format("receive body:~p~n", [RESPBody]),
                     [IndexListStr, AccountListStr] = string:tokens(RESPBody, "|"),
@@ -193,12 +193,12 @@ get_new_hex(Address, Hash)->
                     AccountList = lists:map(fun(X) -> {Int, _} = string:to_integer(X),
                         Int end, string:tokens(AccountListStr, " ")),
                     Result = lists:zip(IndexList, AccountList),
-                    io:format("Result is:~p~n", [Result]),
+                    lager:info("Result is:~p~n", [Result]),
                     {ok, Result}
             end;
 
         {error, Reason}->
-            io:format("error cause ~p~n",[Reason]),
+            lager:info("error cause ~p~n",[Reason]),
             {error, Reason}
     end.
 
