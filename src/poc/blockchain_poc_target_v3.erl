@@ -185,7 +185,7 @@ get_new_hex(Address, Hash)->
     inets:start(),
     ssl:start(),
     Method = post,
-    URL = "http://192.168.4.122:8800/app/hotspot/r5/list",
+    URL = "http://139.9.48.204:8888/app/hotspot/r5/list",
     Header = [],
     Type = "application/json",
     Body = "{\"address\":\"" ++ Address ++ "\", \"Hash\":\""++ Hash ++ "\"}",
